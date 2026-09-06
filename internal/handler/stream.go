@@ -199,9 +199,10 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 
 		var (
 			currentEvent string
-			planData     string
+			planData     string // structured plan JSON from "plan" event
 			planTitle    string
-			tokenBuf     strings.Builder
+			tokenBuf     strings.Builder // full agent text response from "token" events
+			allEvents    strings.Builder // raw log of all SSE events
 		)
 
 		for scanner.Scan() {
@@ -211,30 +212,62 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 			fmt.Fprintf(w, "%s\n", line)
 			w.Flush()
 
-			// Track SSE event type.
+			// Log all events for full persistence.
+			allEvents.WriteString(line)
+			allEvents.WriteString("\n")
+
+			// Track SSE event type if explicitly sent.
 			if strings.HasPrefix(line, "event:") {
 				currentEvent = strings.TrimSpace(strings.TrimPrefix(line, "event:"))
 				continue
 			}
 
-			// Capture data by event type.
+			// Capture data.
 			if strings.HasPrefix(line, "data:") {
 				data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
-				switch currentEvent {
-				case "plan":
-					planData = data
-				case "token":
-					var ev struct {
-						Data string `json:"data"`
+				if data == "" {
+					continue
+				}
+
+				var ev map[string]interface{}
+				if err := json.Unmarshal([]byte(data), &ev); err == nil {
+					// Check if event type is inside the JSON (e.g. {"type": "token", "text": "..."})
+					eventType := currentEvent
+					if t, ok := ev["type"].(string); ok && t != "" {
+						eventType = t
 					}
-					if json.Unmarshal([]byte(data), &ev) == nil {
-						tokenBuf.WriteString(ev.Data)
+
+					switch eventType {
+					case "plan":
+						planData = data
+						if ansStr, ok := ev["answer"].(string); ok && ansStr != "" {
+							// If plan has full answer, use it directly!
+							tokenBuf.Reset()
+							tokenBuf.WriteString(ansStr)
+						}
+					case "token":
+						if txt, ok := ev["text"].(string); ok {
+							tokenBuf.WriteString(txt)
+						} else if d, ok := ev["data"].(string); ok {
+							tokenBuf.WriteString(d)
+						}
+					case "error":
+						tokenBuf.WriteString("[ERROR] ")
+						if msg, ok := ev["message"].(string); ok {
+							tokenBuf.WriteString(msg)
+						} else {
+							tokenBuf.WriteString(data)
+						}
+						tokenBuf.WriteString("\n")
 					}
+				} else {
+					// Plain text stream fallback
+					tokenBuf.WriteString(data)
 				}
 			}
 		}
 
-		// Build plan title.
+		// Build plan title from the first ~80 chars of streamed text.
 		if tokenBuf.Len() > 0 {
 			planTitle = tokenBuf.String()
 			if len(planTitle) > 80 {
@@ -245,13 +278,38 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 			planTitle = "Plan " + time.Now().Format("2006-01-02 15:04")
 		}
 
-		content := planData
-		if content == "" {
-			content = "(no plan data captured)"
+		// Build content: prefer structured plan JSON, fall back to full text,
+		// fall back to raw SSE log.
+		var contentObj struct {
+			Answer  string      `json:"answer"`
+			Plan    interface{} `json:"plan_data,omitempty"`
+			RawText string      `json:"raw_text,omitempty"`
+		}
+		ans := strings.TrimSpace(tokenBuf.String())
+		if ans == "" {
+			ans = strings.TrimSpace(allEvents.String())
+		}
+		contentObj.Answer = ans
+		contentObj.RawText = allEvents.String()
+		if planData != "" {
+			var pd map[string]interface{}
+			if json.Unmarshal([]byte(planData), &pd) == nil {
+				if innerPlan, ok := pd["plan"]; ok {
+					contentObj.Plan = innerPlan
+				} else {
+					contentObj.Plan = pd
+				}
+			}
+		}
+
+		content, err := json.Marshal(contentObj)
+		if err != nil || len(content) < 5 {
+			// Fallback: save raw SSE events.
+			content = []byte(allEvents.String())
 		}
 
 		// Save plan to DB.
-		_, _ = h.plans.Create(context.Background(), userID, planTitle, content)
+		_, _ = h.plans.Create(context.Background(), userID, planTitle, string(content))
 	})
 
 	return nil
