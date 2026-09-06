@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -101,11 +102,16 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "budget_uah is required and must be > 0"})
 	}
 	workouts := c.QueryInt("workouts", 0)
-	note := c.Query("note", "")
+	if workouts < 0 {
+		workouts = 0
+	} else if workouts > 14 {
+		workouts = 14
+	}
+	note := strings.TrimSpace(c.Query("note", ""))
 	apply := c.QueryBool("apply", false)
 
 	fridgeItems := []string{}
-	if fridge := c.Query("fridge", ""); fridge != "" {
+	if fridge := strings.TrimSpace(c.Query("fridge", "")); fridge != "" {
 		for _, item := range strings.Split(fridge, ",") {
 			if t := strings.TrimSpace(item); t != "" {
 				fridgeItems = append(fridgeItems, t)
@@ -115,7 +121,7 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 
 	// Load previous plan if plan_id provided.
 	var previousPlan *interface{}
-	if prevID := c.Query("plan_id", ""); prevID != "" {
+	if prevID := strings.TrimSpace(c.Query("plan_id", "")); prevID != "" {
 		if pid, parseErr := uuid.Parse(prevID); parseErr == nil {
 			if prev, loadErr := h.plans.GetByID(c.Context(), pid, userID); loadErr == nil {
 				var planObj interface{}
@@ -126,18 +132,36 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 		}
 	}
 
-	// Build profile.
-	targetWeight := c.QueryFloat("target_weight", user.Weight)
-	profile := coreProfile{WeightKg: user.Weight, TargetWeightKg: targetWeight}
-	if user.Height > 0 {
-		ht := user.Height
-		profile.HeightCm = &ht
+	// Build profile with sane fallbacks.
+	userWeight := user.Weight
+	if userWeight <= 0 {
+		userWeight = 70.0 // sane fallback if profile weight not set
 	}
-	if age := c.QueryInt("age", 0); age > 0 {
+	targetWeight := c.QueryFloat("target_weight", userWeight)
+	if targetWeight <= 0 {
+		targetWeight = userWeight
+	}
+	profile := coreProfile{WeightKg: userWeight, TargetWeightKg: targetWeight}
+
+	userHeight := user.Height
+	if userHeight <= 0 {
+		userHeight = 175.0 // sane fallback if profile height not set
+	}
+	profile.HeightCm = &userHeight
+
+	if age := c.QueryInt("age", 0); age >= 10 && age <= 120 {
 		profile.Age = &age
+	} else {
+		defaultAge := 25
+		profile.Age = &defaultAge
 	}
-	if sex := c.Query("sex", ""); sex == "male" || sex == "female" {
-		profile.Sex = &sex
+
+	sexStr := strings.ToLower(strings.TrimSpace(c.Query("sex", "")))
+	if sexStr == "male" || sexStr == "female" {
+		profile.Sex = &sexStr
+	} else {
+		defaultSex := "male"
+		profile.Sex = &defaultSex
 	}
 
 	// Send request to core agent.
@@ -308,8 +332,17 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 			content = []byte(allEvents.String())
 		}
 
-		// Save plan to DB.
-		_, _ = h.plans.Create(context.Background(), userID, planTitle, string(content))
+		// Save plan to DB with a timeout context.
+		saveCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+
+		log.Printf("[INFO] saving plan for user %s: title=%q, bytes=%d", userID, planTitle, len(content))
+		p, err := h.plans.Create(saveCtx, userID, planTitle, string(content))
+		if err != nil {
+			log.Printf("[ERROR] failed to create plan in DB for user %s: %v", userID, err)
+		} else {
+			log.Printf("[INFO] plan created successfully: id=%s for user %s", p.ID, userID)
+		}
 	})
 
 	return nil
