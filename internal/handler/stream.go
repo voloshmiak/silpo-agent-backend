@@ -229,12 +229,69 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 			allEvents    strings.Builder // raw log of all SSE events
 		)
 
+		planSaved := false
+		savePlanFunc := func() {
+			if planSaved {
+				return
+			}
+
+			// Build plan title from the first ~80 chars of streamed text.
+			if tokenBuf.Len() > 0 {
+				planTitle = tokenBuf.String()
+				if len(planTitle) > 80 {
+					planTitle = planTitle[:80] + "…"
+				}
+			}
+			if planTitle == "" {
+				planTitle = "Plan " + time.Now().Format("2006-01-02 15:04")
+			}
+
+			var contentObj struct {
+				Answer  string      `json:"answer"`
+				Plan    interface{} `json:"plan_data,omitempty"`
+				RawText string      `json:"raw_text,omitempty"`
+			}
+			ans := strings.TrimSpace(tokenBuf.String())
+			if ans == "" {
+				ans = strings.TrimSpace(allEvents.String())
+			}
+			contentObj.Answer = ans
+			contentObj.RawText = allEvents.String()
+			if planData != "" {
+				var pd map[string]interface{}
+				if json.Unmarshal([]byte(planData), &pd) == nil {
+					if innerPlan, ok := pd["plan"]; ok {
+						contentObj.Plan = innerPlan
+					} else {
+						contentObj.Plan = pd
+					}
+				}
+			}
+
+			content, err := json.Marshal(contentObj)
+			if err != nil || len(content) < 5 {
+				content = []byte(allEvents.String())
+			}
+
+			planSaved = true
+			saveCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+
+			log.Printf("[INFO] saving plan for user %s: title=%q, bytes=%d", userID, planTitle, len(content))
+			p, err := h.plans.Create(saveCtx, userID, planTitle, string(content))
+			if err != nil {
+				log.Printf("[ERROR] failed to create plan in DB for user %s: %v", userID, err)
+			} else {
+				log.Printf("[INFO] plan created successfully: id=%s for user %s", p.ID, userID)
+			}
+		}
+
 		for scanner.Scan() {
 			line := scanner.Text()
 
-			// Send line to frontend.
-			fmt.Fprintf(w, "%s\n", line)
-			w.Flush()
+			// Send line to frontend (ignore write errors if client disconnected).
+			_, _ = fmt.Fprintf(w, "%s\n", line)
+			_ = w.Flush()
 
 			// Log all events for full persistence.
 			allEvents.WriteString(line)
@@ -255,7 +312,6 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 
 				var ev map[string]interface{}
 				if err := json.Unmarshal([]byte(data), &ev); err == nil {
-					// Check if event type is inside the JSON (e.g. {"type": "token", "text": "..."})
 					eventType := currentEvent
 					if t, ok := ev["type"].(string); ok && t != "" {
 						eventType = t
@@ -265,10 +321,11 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 					case "plan":
 						planData = data
 						if ansStr, ok := ev["answer"].(string); ok && ansStr != "" {
-							// If plan has full answer, use it directly!
 							tokenBuf.Reset()
 							tokenBuf.WriteString(ansStr)
 						}
+						// Save immediately as soon as plan event arrives!
+						savePlanFunc()
 					case "token":
 						if txt, ok := ev["text"].(string); ok {
 							tokenBuf.WriteString(txt)
@@ -285,64 +342,13 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 						tokenBuf.WriteString("\n")
 					}
 				} else {
-					// Plain text stream fallback
 					tokenBuf.WriteString(data)
 				}
 			}
 		}
 
-		// Build plan title from the first ~80 chars of streamed text.
-		if tokenBuf.Len() > 0 {
-			planTitle = tokenBuf.String()
-			if len(planTitle) > 80 {
-				planTitle = planTitle[:80] + "…"
-			}
-		}
-		if planTitle == "" {
-			planTitle = "Plan " + time.Now().Format("2006-01-02 15:04")
-		}
-
-		// Build content: prefer structured plan JSON, fall back to full text,
-		// fall back to raw SSE log.
-		var contentObj struct {
-			Answer  string      `json:"answer"`
-			Plan    interface{} `json:"plan_data,omitempty"`
-			RawText string      `json:"raw_text,omitempty"`
-		}
-		ans := strings.TrimSpace(tokenBuf.String())
-		if ans == "" {
-			ans = strings.TrimSpace(allEvents.String())
-		}
-		contentObj.Answer = ans
-		contentObj.RawText = allEvents.String()
-		if planData != "" {
-			var pd map[string]interface{}
-			if json.Unmarshal([]byte(planData), &pd) == nil {
-				if innerPlan, ok := pd["plan"]; ok {
-					contentObj.Plan = innerPlan
-				} else {
-					contentObj.Plan = pd
-				}
-			}
-		}
-
-		content, err := json.Marshal(contentObj)
-		if err != nil || len(content) < 5 {
-			// Fallback: save raw SSE events.
-			content = []byte(allEvents.String())
-		}
-
-		// Save plan to DB with a timeout context.
-		saveCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-
-		log.Printf("[INFO] saving plan for user %s: title=%q, bytes=%d", userID, planTitle, len(content))
-		p, err := h.plans.Create(saveCtx, userID, planTitle, string(content))
-		if err != nil {
-			log.Printf("[ERROR] failed to create plan in DB for user %s: %v", userID, err)
-		} else {
-			log.Printf("[INFO] plan created successfully: id=%s for user %s", p.ID, userID)
-		}
+		// Fallback: save if plan event wasn't sent but tokens were collected.
+		savePlanFunc()
 	})
 
 	return nil
