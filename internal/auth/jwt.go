@@ -16,7 +16,7 @@ type Claims struct {
 	jwt.RegisteredClaims
 }
 
-// GenerateToken creates a signed JWT for the given user ID.
+// Generate creates a signed JWT for the given user ID.
 func GenerateToken(userID uuid.UUID, secret string) (string, error) {
 	claims := Claims{
 		UserID: userID,
