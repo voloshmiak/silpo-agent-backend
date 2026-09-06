@@ -61,7 +61,40 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Deploy to Cloud Run
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          JWT_SECRET: ${{ secrets.JWT_SECRET }}
+          CORE_SERVICE_TOKEN: ${{ secrets.CORE_SERVICE_TOKEN }}
+          CORE_AGENT_URL: ${{ vars.CORE_AGENT_URL }}
+          SILPO_REFRESH_URL: ${{ vars.SILPO_REFRESH_URL }}
         run: |
+          if [ -z "$DATABASE_URL" ]; then
+            echo "::error::DATABASE_URL secret is empty - the service cannot start without it"
+            exit 1
+          fi
+
+          trap 'rm -f /tmp/env-vars.yaml' EXIT
+
+          # Env vars go through a file rather than --set-env-vars: a Postgres
+          # URL contains '@', ':' and '/', which break gcloud's delimiter
+          # syntax (a '^@^' delimiter silently truncates the URL at the
+          # password). JSON is valid YAML, and jq escapes every value.
+          # Secrets arrive via the step env, so they are never interpolated
+          # into the script text.
+          jq -n \
+            --arg database_url "$DATABASE_URL" \
+            --arg jwt_secret "$JWT_SECRET" \
+            --arg core_service_token "$CORE_SERVICE_TOKEN" \
+            --arg core_agent_url "$CORE_AGENT_URL" \
+            --arg silpo_refresh_url "$SILPO_REFRESH_URL" \
+            '{
+              DATABASE_URL: $database_url,
+              JWT_SECRET: $jwt_secret,
+              CORE_SERVICE_TOKEN: $core_service_token,
+              CORE_AGENT_URL: $core_agent_url,
+              SILPO_REFRESH_URL: $silpo_refresh_url
+            }' > /tmp/env-vars.yaml
+
           gcloud run deploy "$SERVICE" \
             --project="$PROJECT_ID" \
             --region="$REGION" \
@@ -69,5 +102,14 @@ jobs:
             --platform=managed \
             --allow-unauthenticated \
             --timeout=600 \
-            --quiet \
-            --set-env-vars="^@^DATABASE_URL=${{ secrets.DATABASE_URL }}@JWT_SECRET=${{ secrets.JWT_SECRET }}@CORE_SERVICE_TOKEN=${{ secrets.CORE_SERVICE_TOKEN }}@CORE_AGENT_URL=${{ vars.CORE_AGENT_URL }}@SILPO_REFRESH_URL=${{ vars.SILPO_REFRESH_URL }}"
+            --env-vars-file=/tmp/env-vars.yaml \
+            --quiet
+
+      - name: Dump Cloud Run logs on failure
+        if: failure()
+        run: |
+          gcloud logging read \
+            "resource.type=cloud_run_revision AND resource.labels.service_name=$SERVICE" \
+            --project="$PROJECT_ID" \
+            --limit=50 \
+            --format='value(timestamp,textPayload)' || true
