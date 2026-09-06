@@ -1,3 +1,4 @@
 .env
 *.exe
 silpo-agent-backend
+.idea/

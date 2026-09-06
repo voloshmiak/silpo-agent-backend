@@ -1,0 +1,12 @@
+.git
+.gitignore
+.github
+.idea
+.claude
+.env
+.env.example
+*.exe
+silpo-agent-backend
+*.md
+Dockerfile
+.dockerignore
