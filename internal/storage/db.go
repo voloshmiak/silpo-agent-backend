@@ -29,9 +29,35 @@ func migrate(ctx context.Context, pool *pgxpool.Pool) error {
 		CREATE TABLE IF NOT EXISTS users (
 			id         UUID PRIMARY KEY,
 			name       TEXT,
-			weight     DOUBLE PRECISION,
-			height     DOUBLE PRECISION,
 			created_at TIMESTAMPTZ DEFAULT NOW()
+		);
+
+		ALTER TABLE users DROP COLUMN IF EXISTS weight;
+		ALTER TABLE users DROP COLUMN IF EXISTS height;
+
+		CREATE TABLE IF NOT EXISTS user_settings (
+			user_id              UUID PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+			-- Фізичні дані та ціль
+			weight               DOUBLE PRECISION NOT NULL DEFAULT 70.0,
+			target_weight        DOUBLE PRECISION NOT NULL DEFAULT 70.0,
+			height               DOUBLE PRECISION NOT NULL DEFAULT 175.0,
+			age                  INT NOT NULL DEFAULT 25,
+			sex                  TEXT NOT NULL DEFAULT 'male',
+			focus                TEXT NOT NULL DEFAULT 'Схуднення',
+			weekly_pace          DOUBLE PRECISION NOT NULL DEFAULT -0.5,
+			-- Спортивний режим
+			workouts_per_week    INT NOT NULL DEFAULT 3,
+			workout_schedule     JSONB NOT NULL DEFAULT '{}'::jsonb,
+			missed_workout_today BOOLEAN NOT NULL DEFAULT false,
+			-- Харчові обмеження
+			allergens            TEXT[] NOT NULL DEFAULT '{}',
+			excluded_products    TEXT[] NOT NULL DEFAULT '{}',
+			diet_type            TEXT NOT NULL DEFAULT 'БЕЗ ОБМЕЖЕНЬ',
+			-- Бюджет на тиждень
+			weekly_budget        DOUBLE PRECISION NOT NULL DEFAULT 1500.0,
+			promo_priority       TEXT NOT NULL DEFAULT 'Високий',
+			delivery_included    BOOLEAN NOT NULL DEFAULT true,
+			updated_at           TIMESTAMPTZ DEFAULT NOW()
 		);
 
 		CREATE TABLE IF NOT EXISTS silpo_tokens (

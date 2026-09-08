@@ -80,6 +80,8 @@ func main() {
 	auth := app.Group("", mw.RequireAuth(cfg.JWTSecret))
 	auth.Get("/users/me", userHandler.GetMe)
 	auth.Put("/users/me", userHandler.UpdateMe)
+	auth.Get("/users/me/settings", userHandler.GetSettings)
+	auth.Put("/users/me/settings", userHandler.UpdateSettings)
 	auth.Post("/users/me/silpo-token", userHandler.SaveSilpoToken)
 
 	// Plan routes.
