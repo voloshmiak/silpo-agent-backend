@@ -48,7 +48,31 @@ func NewStreamHandler(
 		silpoSvc:     silpoSvc,
 		coreAgentURL: coreAgentURL,
 		serviceToken: serviceToken,
-		httpClient:   &http.Client{Timeout: 5 * time.Minute},
+		httpClient:   newStreamClient(),
+	}
+}
+
+// newStreamClient builds the client that talks to the core agent's SSE endpoint.
+//
+// It deliberately has no http.Client.Timeout: that deadline covers reading the
+// response body, so on a streaming response it kills the stream mid-run — a
+// plan that takes longer than the deadline was cut off at exactly that mark,
+// and the browser saw the connection close with no final event. A plan run
+// legitimately takes many minutes, so the phases that must not hang are
+// bounded individually instead, and the body read is left unbounded.
+func newStreamClient() *http.Client {
+	return &http.Client{
+		Transport: &http.Transport{
+			Proxy: http.ProxyFromEnvironment,
+			DialContext: (&net.Dialer{
+				Timeout:   10 * time.Second,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			TLSHandshakeTimeout:   10 * time.Second,
+			ResponseHeaderTimeout: 60 * time.Second,
+			ExpectContinueTimeout: time.Second,
+			IdleConnTimeout:       90 * time.Second,
+		},
 	}
 }
 
@@ -150,7 +174,10 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 		}
 	}
 
-	apply := c.QueryBool("apply", false)
+	// Cart writes are on by default: the agent fills the user's Silpo cart with
+	// what it picked, while checkout and payment stay with the user in Silpo.
+	// ?apply=false keeps a run read-only.
+	apply := c.QueryBool("apply", true)
 
 	fridgeItems := []string{}
 	if fridge := strings.TrimSpace(c.Query("fridge", "")); fridge != "" {
@@ -238,8 +265,13 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 	})
 
 	upstream := h.coreAgentURL + "/plan/stream"
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, upstream, bytes.NewReader(bodyBytes))
+	// Cancelling this context aborts the upstream run. It is cancelled when the
+	// browser goes away, so a closed tab stops the agent instead of leaving it
+	// planning (and billing) into a connection nobody is reading.
+	streamCtx, cancelStream := context.WithCancel(context.Background())
+	req, err := http.NewRequestWithContext(streamCtx, http.MethodPost, upstream, bytes.NewReader(bodyBytes))
 	if err != nil {
+		cancelStream()
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to build upstream request"})
 	}
 	req.Header.Set("Content-Type", "application/json")
@@ -248,12 +280,16 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 
 	resp, err := h.httpClient.Do(req)
 	if err != nil {
+		cancelStream()
+		log.Printf("[ERROR] upstream request failed for user %s: %v", userID, err)
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{"error": fmt.Sprintf("upstream failed: %v", err)})
 	}
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
 		resp.Body.Close()
+		cancelStream()
+		log.Printf("[ERROR] upstream returned %d for user %s: %s", resp.StatusCode, userID, string(body))
 		return c.Status(fiber.StatusBadGateway).JSON(fiber.Map{
 			"error":   fmt.Sprintf("upstream returned %d", resp.StatusCode),
 			"details": string(body),
@@ -266,6 +302,7 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 	c.Context().Hijack(func(conn net.Conn) {
 		defer conn.Close()
 		defer resp.Body.Close()
+		defer cancelStream()
 
 		// Write HTTP response headers directly.
 		w := bufio.NewWriterSize(conn, 4096)
@@ -347,12 +384,32 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 			}
 		}
 
+		// The browser must always learn how the run ended. Anything that leaves
+		// this loop without a plan or an error event reaches the client as a
+		// connection that simply stopped, which it can only report as "the
+		// stream ended without a plan" — the least useful message possible.
+		sawError := false
+		writeError := func(message string) {
+			payload, err := json.Marshal(map[string]string{"type": "error", "message": message})
+			if err != nil {
+				return
+			}
+			_, _ = fmt.Fprintf(w, "data: %s\n\n", payload)
+			_ = w.Flush()
+		}
+
 		for scanner.Scan() {
 			line := scanner.Text()
 
-			// Send line to frontend (ignore write errors if client disconnected).
-			_, _ = fmt.Fprintf(w, "%s\n", line)
-			_ = w.Flush()
+			// A failed write means the client is gone: stop reading upstream.
+			if _, err := fmt.Fprintf(w, "%s\n", line); err != nil {
+				log.Printf("[WARN] client went away mid-stream for user %s: %v", userID, err)
+				return
+			}
+			if err := w.Flush(); err != nil {
+				log.Printf("[WARN] client went away mid-stream for user %s: %v", userID, err)
+				return
+			}
 
 			// Log all events for full persistence.
 			allEvents.WriteString(line)
@@ -394,8 +451,11 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 							tokenBuf.WriteString(d)
 						}
 					case "error":
+						sawError = true
 						tokenBuf.WriteString("[ERROR] ")
 						if msg, ok := ev["message"].(string); ok {
+							log.Printf("[ERROR] agent reported a failure for user %s (run %v): %s",
+								userID, ev["run_id"], msg)
 							tokenBuf.WriteString(msg)
 						} else {
 							tokenBuf.WriteString(data)
@@ -408,8 +468,18 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 			}
 		}
 
-		// Fallback: save if plan event wasn't sent but tokens were collected.
-		savePlanFunc()
+		switch {
+		case scanner.Err() != nil:
+			// A read error here is the upstream connection breaking under us:
+			// a cut stream, a dropped connection, a cancelled context.
+			log.Printf("[ERROR] upstream stream broke for user %s: %v", userID, scanner.Err())
+			writeError("Зв'язок з агентом обірвався. Спробуйте згенерувати план ще раз.")
+		case planData == "" && !sawError:
+			log.Printf("[ERROR] upstream closed with no plan and no error for user %s", userID)
+			writeError("Агент завершив роботу без плану. Спробуйте ще раз.")
+		case planData != "":
+			savePlanFunc()
+		}
 	})
 
 	return nil
