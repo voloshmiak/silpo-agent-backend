@@ -120,6 +120,5 @@ func (h *UserHandler) SaveSilpoToken(c *fiber.Ctx) error {
 	if err := h.tokens.Upsert(c.Context(), t); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-
 	return c.JSON(fiber.Map{"status": "ok"})
 }
