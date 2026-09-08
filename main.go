@@ -53,7 +53,7 @@ func main() {
 	planHandler := handler.NewPlanHandler(planRepo)
 	settingsHandler := handler.NewSettingsHandler(settingsRepo)
 	feedbackHandler := handler.NewFeedbackHandler(feedbackRepo)
-	streamHandler := handler.NewStreamHandler(planRepo, tokenRepo, userRepo, feedbackRepo, silpoSvc, cfg.CoreAgentURL, cfg.CoreServiceToken)
+	streamHandler := handler.NewStreamHandler(planRepo, tokenRepo, userRepo, feedbackRepo, settingsRepo, silpoSvc, cfg.CoreAgentURL, cfg.CoreServiceToken)
 
 	// Fiber app.
 	app := fiber.New(fiber.Config{
@@ -80,8 +80,6 @@ func main() {
 	auth := app.Group("", mw.RequireAuth(cfg.JWTSecret))
 	auth.Get("/users/me", userHandler.GetMe)
 	auth.Put("/users/me", userHandler.UpdateMe)
-	auth.Get("/users/me/settings", userHandler.GetSettings)
-	auth.Put("/users/me/settings", userHandler.UpdateSettings)
 	auth.Post("/users/me/silpo-token", userHandler.SaveSilpoToken)
 
 	// Plan routes.
