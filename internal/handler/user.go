@@ -10,22 +10,25 @@ import (
 type UserHandler struct {
 	users     *storage.UserRepo
 	tokens    *storage.TokenRepo
+	settings  *storage.SettingsRepo
 	jwtSecret string
 }
 
 func NewUserHandler(
 	users *storage.UserRepo,
 	tokens *storage.TokenRepo,
+	settings *storage.SettingsRepo,
 	jwtSecret string,
 ) *UserHandler {
 	return &UserHandler{
 		users:     users,
 		tokens:    tokens,
+		settings:  settings,
 		jwtSecret: jwtSecret,
 	}
 }
 
-// POST /users — register (open endpoint, accepts optional silpo_token / access_token)
+// Register handles POST /users — an open endpoint that accepts an optional silpo_token / access_token.
 func (h *UserHandler) Register(c *fiber.Ctx) error {
 	var body struct {
 		Name         string `json:"name"`
@@ -42,7 +45,7 @@ func (h *UserHandler) Register(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	// If MCP token was provided during registration, save it immediately
+	// If an MCP token was provided during registration, save it immediately.
 	mcpToken := body.SilpoToken
 	if mcpToken == "" {
 		mcpToken = body.AccessToken
@@ -55,9 +58,6 @@ func (h *UserHandler) Register(c *fiber.Ctx) error {
 		})
 	}
 
-	// Initialize default user settings in DB
-	_, _ = h.settings.GetByUserID(c.Context(), user.ID)
-
 	token, err := auth.GenerateToken(user.ID, h.jwtSecret)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to generate token"})
@@ -69,7 +69,7 @@ func (h *UserHandler) Register(c *fiber.Ctx) error {
 	})
 }
 
-// GET /users/me — get basic profile (name, id, created_at)
+// GetMe handles GET /users/me — returns the basic profile (name, id, created_at).
 func (h *UserHandler) GetMe(c *fiber.Ctx) error {
 	userID := middleware.GetUserID(c)
 	user, err := h.users.GetByID(c.Context(), userID)
@@ -79,7 +79,7 @@ func (h *UserHandler) GetMe(c *fiber.Ctx) error {
 	return c.JSON(user)
 }
 
-// PUT /users/me — update user name
+// UpdateMe handles PUT /users/me — updates the user's name.
 func (h *UserHandler) UpdateMe(c *fiber.Ctx) error {
 	userID := middleware.GetUserID(c)
 
@@ -97,7 +97,7 @@ func (h *UserHandler) UpdateMe(c *fiber.Ctx) error {
 	return c.JSON(user)
 }
 
-// POST /users/me/silpo-token — save Silpo access + refresh token
+// SaveSilpoToken handles POST /users/me/silpo-token — saves the Silpo access and refresh tokens.
 func (h *UserHandler) SaveSilpoToken(c *fiber.Ctx) error {
 	userID := middleware.GetUserID(c)
 
