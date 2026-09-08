@@ -478,7 +478,7 @@ func (h *StreamHandler) buildFeedbackNote(ctx context.Context, userID, prevPlanI
 	}
 
 	ratings, err := h.feedback.ListDishRatings(ctx, userID, prevPlanID)
-	if err != nil {
+	if err == nil {
 		var disliked []string
 		for _, r := range ratings {
 			if r.Rating == -1 {
@@ -486,7 +486,7 @@ func (h *StreamHandler) buildFeedbackNote(ctx context.Context, userID, prevPlanI
 			}
 		}
 		if len(disliked) > 0 {
-			parts = append(parts, "Не сподобались страви:"+strings.Join(disliked, ","))
+			parts = append(parts, "Не сподобались страви: "+strings.Join(disliked, ", "))
 		}
 	}
 

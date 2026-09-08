@@ -81,6 +81,8 @@ func main() {
 	auth.Get("/users/me", userHandler.GetMe)
 	auth.Put("/users/me", userHandler.UpdateMe)
 	auth.Post("/users/me/silpo-token", userHandler.SaveSilpoToken)
+	auth.Get("/users/me/settings", userHandler.GetSettings)
+	auth.Put("/users/me/settings", userHandler.PutSettings)
 
 	// Plan routes.
 	auth.Get("/plans", planHandler.List)

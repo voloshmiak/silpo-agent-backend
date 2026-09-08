@@ -122,3 +122,27 @@ func (h *UserHandler) SaveSilpoToken(c *fiber.Ctx) error {
 	}
 	return c.JSON(fiber.Map{"status": "ok"})
 }
+func (h *UserHandler) GetSettings(c *fiber.Ctx) error {
+	userID := middleware.GetUserID(c)
+
+	settings, err := h.settings.GetFlat(c.Context(), userID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(settings)
+}
+
+func (h *UserHandler) PutSettings(c *fiber.Ctx) error {
+	userID := middleware.GetUserID(c)
+
+	var body storage.FlatSettingsInput
+	if err := c.BodyParser(&body); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON"})
+	}
+
+	settings, err := h.settings.PutFlat(c.Context(), userID, body)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(settings)
+}
