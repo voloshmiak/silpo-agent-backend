@@ -40,6 +40,7 @@ func main() {
 
 	// Repositories.
 	userRepo := storage.NewUserRepo(pool)
+	settingsRepo := storage.NewSettingsRepo(pool)
 	tokenRepo := storage.NewTokenRepo(pool)
 	planRepo := storage.NewPlanRepo(pool)
 
@@ -47,9 +48,9 @@ func main() {
 	silpoSvc := silpo.NewService(cfg.SilpoRefreshURL)
 
 	// Handlers.
-	userHandler := handler.NewUserHandler(userRepo, tokenRepo, cfg.JWTSecret)
+	userHandler := handler.NewUserHandler(userRepo, settingsRepo, tokenRepo, cfg.JWTSecret)
 	planHandler := handler.NewPlanHandler(planRepo)
-	streamHandler := handler.NewStreamHandler(planRepo, tokenRepo, userRepo, silpoSvc, cfg.CoreAgentURL, cfg.CoreServiceToken)
+	streamHandler := handler.NewStreamHandler(planRepo, tokenRepo, userRepo, settingsRepo, silpoSvc, cfg.CoreAgentURL, cfg.CoreServiceToken)
 
 	// Fiber app.
 	app := fiber.New(fiber.Config{
@@ -76,6 +77,8 @@ func main() {
 	auth := app.Group("", mw.RequireAuth(cfg.JWTSecret))
 	auth.Get("/users/me", userHandler.GetMe)
 	auth.Put("/users/me", userHandler.UpdateMe)
+	auth.Get("/users/me/settings", userHandler.GetSettings)
+	auth.Put("/users/me/settings", userHandler.UpdateSettings)
 	auth.Post("/users/me/silpo-token", userHandler.SaveSilpoToken)
 
 	// Plan routes.

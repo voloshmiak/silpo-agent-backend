@@ -24,6 +24,7 @@ type StreamHandler struct {
 	plans        *storage.PlanRepo
 	tokens       *storage.TokenRepo
 	users        *storage.UserRepo
+	settings     *storage.SettingsRepo
 	silpoSvc     *silpo.Service
 	coreAgentURL string
 	serviceToken string
@@ -34,6 +35,7 @@ func NewStreamHandler(
 	plans *storage.PlanRepo,
 	tokens *storage.TokenRepo,
 	users *storage.UserRepo,
+	settings *storage.SettingsRepo,
 	silpoSvc *silpo.Service,
 	coreAgentURL string,
 	serviceToken string,
@@ -42,6 +44,7 @@ func NewStreamHandler(
 		plans:        plans,
 		tokens:       tokens,
 		users:        users,
+		settings:     settings,
 		silpoSvc:     silpoSvc,
 		coreAgentURL: coreAgentURL,
 		serviceToken: serviceToken,
@@ -77,11 +80,14 @@ type coreProfile struct {
 func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 	userID := middleware.GetUserID(c)
 
-	// Load user profile.
-	user, err := h.users.GetByID(c.Context(), userID)
+	// Ensure user exists.
+	_, err := h.users.GetByID(c.Context(), userID)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "user not found"})
 	}
+
+	// Load user settings (physical data, goals, restrictions, budget).
+	userSettings, _ := h.settings.GetByUserID(c.Context(), userID)
 
 	// Silpo token: query param overrides DB value (useful for testing).
 	var silpoToken string
@@ -96,18 +102,54 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 		}
 	}
 
-	// Parse query params.
+	// Budget: query param or stored weekly_budget.
 	budgetUAH := c.QueryFloat("budget_uah", 0)
-	if budgetUAH <= 0 {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "budget_uah is required and must be > 0"})
+	if budgetUAH <= 0 && userSettings != nil && userSettings.WeeklyBudget > 0 {
+		budgetUAH = userSettings.WeeklyBudget
 	}
-	workouts := c.QueryInt("workouts", 0)
+	if budgetUAH <= 0 {
+		budgetUAH = 1500.0 // sane default
+	}
+
+	// Workouts: query param or stored workouts_per_week.
+	workouts := c.QueryInt("workouts", -1)
 	if workouts < 0 {
-		workouts = 0
-	} else if workouts > 14 {
+		if userSettings != nil {
+			workouts = userSettings.WorkoutsPerWeek
+		} else {
+			workouts = 3
+		}
+	}
+	if workouts > 14 {
 		workouts = 14
 	}
+
 	note := strings.TrimSpace(c.Query("note", ""))
+	// Append allergens and excluded products from settings into note if present
+	if userSettings != nil {
+		restrictions := []string{}
+		if len(userSettings.Allergens) > 0 {
+			restrictions = append(restrictions, "Алергени: "+strings.Join(userSettings.Allergens, ", "))
+		}
+		if len(userSettings.ExcludedProducts) > 0 {
+			restrictions = append(restrictions, "Виключити: "+strings.Join(userSettings.ExcludedProducts, ", "))
+		}
+		if userSettings.DietType != "" && userSettings.DietType != "БЕЗ ОБМЕЖЕНЬ" {
+			restrictions = append(restrictions, "Дієта: "+userSettings.DietType)
+		}
+		if userSettings.Focus != "" {
+			restrictions = append(restrictions, "Ціль: "+userSettings.Focus)
+		}
+		if len(restrictions) > 0 {
+			combinedRestrictions := strings.Join(restrictions, "; ")
+			if note != "" {
+				note = note + " (" + combinedRestrictions + ")"
+			} else {
+				note = combinedRestrictions
+			}
+		}
+	}
+
 	apply := c.QueryBool("apply", false)
 
 	fridgeItems := []string{}
@@ -132,36 +174,55 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 		}
 	}
 
-	// Build profile with sane fallbacks.
-	userWeight := user.Weight
-	if userWeight <= 0 {
-		userWeight = 70.0 // sane fallback if profile weight not set
-	}
-	targetWeight := c.QueryFloat("target_weight", userWeight)
-	if targetWeight <= 0 {
-		targetWeight = userWeight
-	}
-	profile := coreProfile{WeightKg: userWeight, TargetWeightKg: targetWeight}
+	// Build profile with stored settings or sane fallbacks.
+	userWeight := 70.0
+	targetWeight := 70.0
+	userHeight := 175.0
+	userAge := 25
+	userSex := "male"
 
-	userHeight := user.Height
-	if userHeight <= 0 {
-		userHeight = 175.0 // sane fallback if profile height not set
+	if userSettings != nil {
+		if userSettings.Weight > 0 {
+			userWeight = userSettings.Weight
+		}
+		if userSettings.TargetWeight > 0 {
+			targetWeight = userSettings.TargetWeight
+		} else {
+			targetWeight = userWeight
+		}
+		if userSettings.Height > 0 {
+			userHeight = userSettings.Height
+		}
+		if userSettings.Age > 0 {
+			userAge = userSettings.Age
+		}
+		if userSettings.Sex != "" {
+			s := strings.ToLower(userSettings.Sex)
+			if s == "male" || s == "чол." || s == "чоловіча" {
+				userSex = "male"
+			} else if s == "female" || s == "жін." || s == "жіноча" {
+				userSex = "female"
+			}
+		}
 	}
-	profile.HeightCm = &userHeight
 
-	if age := c.QueryInt("age", 0); age >= 10 && age <= 120 {
-		profile.Age = &age
-	} else {
-		defaultAge := 25
-		profile.Age = &defaultAge
+	// Query overrides
+	if qWeight := c.QueryFloat("target_weight", 0); qWeight > 0 {
+		targetWeight = qWeight
+	}
+	if qAge := c.QueryInt("age", 0); qAge >= 10 && qAge <= 120 {
+		userAge = qAge
+	}
+	if qSex := strings.ToLower(strings.TrimSpace(c.Query("sex", ""))); qSex == "male" || qSex == "female" {
+		userSex = qSex
 	}
 
-	sexStr := strings.ToLower(strings.TrimSpace(c.Query("sex", "")))
-	if sexStr == "male" || sexStr == "female" {
-		profile.Sex = &sexStr
-	} else {
-		defaultSex := "male"
-		profile.Sex = &defaultSex
+	profile := coreProfile{
+		WeightKg:       userWeight,
+		TargetWeightKg: targetWeight,
+		HeightCm:       &userHeight,
+		Age:            &userAge,
+		Sex:            &userSex,
 	}
 
 	// Send request to core agent.

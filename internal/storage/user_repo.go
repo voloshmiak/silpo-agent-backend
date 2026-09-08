@@ -12,8 +12,6 @@ import (
 type User struct {
 	ID        uuid.UUID `json:"id"`
 	Name      string    `json:"name"`
-	Weight    float64   `json:"weight"`
-	Height    float64   `json:"height"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -43,19 +41,19 @@ func (r *UserRepo) Create(ctx context.Context, name string) (*User, error) {
 func (r *UserRepo) GetByID(ctx context.Context, id uuid.UUID) (*User, error) {
 	u := &User{}
 	err := r.pool.QueryRow(ctx,
-		`SELECT id, name, COALESCE(weight, 0), COALESCE(height, 0), created_at FROM users WHERE id = $1`,
+		`SELECT id, name, created_at FROM users WHERE id = $1`,
 		id,
-	).Scan(&u.ID, &u.Name, &u.Weight, &u.Height, &u.CreatedAt)
+	).Scan(&u.ID, &u.Name, &u.CreatedAt)
 	if err != nil {
 		return nil, fmt.Errorf("get user: %w", err)
 	}
 	return u, nil
 }
 
-func (r *UserRepo) Update(ctx context.Context, id uuid.UUID, name string, weight, height float64) (*User, error) {
+func (r *UserRepo) Update(ctx context.Context, id uuid.UUID, name string) (*User, error) {
 	_, err := r.pool.Exec(ctx,
-		`UPDATE users SET name = $1, weight = $2, height = $3 WHERE id = $4`,
-		name, weight, height, id,
+		`UPDATE users SET name = $1 WHERE id = $2`,
+		name, id,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("update user: %w", err)

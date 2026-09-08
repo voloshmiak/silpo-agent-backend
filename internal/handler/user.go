@@ -9,12 +9,23 @@ import (
 
 type UserHandler struct {
 	users     *storage.UserRepo
+	settings  *storage.SettingsRepo
 	tokens    *storage.TokenRepo
 	jwtSecret string
 }
 
-func NewUserHandler(users *storage.UserRepo, tokens *storage.TokenRepo, jwtSecret string) *UserHandler {
-	return &UserHandler{users: users, tokens: tokens, jwtSecret: jwtSecret}
+func NewUserHandler(
+	users *storage.UserRepo,
+	settings *storage.SettingsRepo,
+	tokens *storage.TokenRepo,
+	jwtSecret string,
+) *UserHandler {
+	return &UserHandler{
+		users:     users,
+		settings:  settings,
+		tokens:    tokens,
+		jwtSecret: jwtSecret,
+	}
 }
 
 // POST /users — register (open endpoint)
@@ -42,7 +53,7 @@ func (h *UserHandler) Register(c *fiber.Ctx) error {
 	})
 }
 
-// GET /users/me — get own profile
+// GET /users/me — get basic profile (name, id, created_at)
 func (h *UserHandler) GetMe(c *fiber.Ctx) error {
 	userID := middleware.GetUserID(c)
 	user, err := h.users.GetByID(c.Context(), userID)
@@ -52,24 +63,49 @@ func (h *UserHandler) GetMe(c *fiber.Ctx) error {
 	return c.JSON(user)
 }
 
-// PUT /users/me — update profile
+// PUT /users/me — update user name
 func (h *UserHandler) UpdateMe(c *fiber.Ctx) error {
 	userID := middleware.GetUserID(c)
 
 	var body struct {
-		Name   string  `json:"name"`
-		Weight float64 `json:"weight"`
-		Height float64 `json:"height"`
+		Name string `json:"name"`
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON"})
 	}
 
-	user, err := h.users.Update(c.Context(), userID, body.Name, body.Weight, body.Height)
+	user, err := h.users.Update(c.Context(), userID, body.Name)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(user)
+}
+
+// GET /users/me/settings — get all user parameters, physical metrics & restrictions
+func (h *UserHandler) GetSettings(c *fiber.Ctx) error {
+	userID := middleware.GetUserID(c)
+	s, err := h.settings.GetByUserID(c.Context(), userID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(s)
+}
+
+// PUT /users/me/settings — save/update user parameters, physical metrics & restrictions
+func (h *UserHandler) UpdateSettings(c *fiber.Ctx) error {
+	userID := middleware.GetUserID(c)
+
+	var s storage.UserSettings
+	if err := c.BodyParser(&s); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON body: " + err.Error()})
+	}
+	s.UserID = userID
+
+	updated, err := h.settings.Upsert(c.Context(), &s)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(updated)
 }
 
 // POST /users/me/silpo-token — save Silpo access + refresh token
