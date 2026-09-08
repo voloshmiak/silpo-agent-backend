@@ -25,10 +25,13 @@ func NewUserHandler(
 	}
 }
 
-// POST /users — register (open endpoint)
+// POST /users — register (open endpoint, accepts optional silpo_token / access_token)
 func (h *UserHandler) Register(c *fiber.Ctx) error {
 	var body struct {
-		Name string `json:"name"`
+		Name         string `json:"name"`
+		SilpoToken   string `json:"silpo_token"`
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON"})
@@ -38,6 +41,22 @@ func (h *UserHandler) Register(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
+
+	// If MCP token was provided during registration, save it immediately
+	mcpToken := body.SilpoToken
+	if mcpToken == "" {
+		mcpToken = body.AccessToken
+	}
+	if mcpToken != "" {
+		_ = h.tokens.Upsert(c.Context(), &storage.SilpoToken{
+			UserID:       user.ID,
+			AccessToken:  mcpToken,
+			RefreshToken: body.RefreshToken,
+		})
+	}
+
+	// Initialize default user settings in DB
+	_, _ = h.settings.GetByUserID(c.Context(), user.ID)
 
 	token, err := auth.GenerateToken(user.ID, h.jwtSecret)
 	if err != nil {

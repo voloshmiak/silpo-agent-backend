@@ -15,9 +15,11 @@
 * **Body:**
 ```json
 {
-  "name": "Михайло"
+  "name": "Михайло",
+  "silpo_token": "5e1c10ca-0378-4523-abd4-9b5b3cce6084:QtV0Jndg1FHwmBEc:CCaxBjRZE1Ix2zP9sUHfEMOdJOsN5xW5"
 }
 ```
+*(поле `silpo_token` опціональне — можна передати одразу при реєстрації, або зберегти пізніше через `POST /users/me/silpo-token`)*
 * **Response (201 Created):**
 ```json
 {
