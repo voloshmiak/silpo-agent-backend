@@ -24,6 +24,7 @@ type StreamHandler struct {
 	plans        *storage.PlanRepo
 	tokens       *storage.TokenRepo
 	users        *storage.UserRepo
+	feedback     *storage.FeedbackRepo
 	silpoSvc     *silpo.Service
 	coreAgentURL string
 	serviceToken string
@@ -34,6 +35,7 @@ func NewStreamHandler(
 	plans *storage.PlanRepo,
 	tokens *storage.TokenRepo,
 	users *storage.UserRepo,
+	feedback *storage.FeedbackRepo,
 	silpoSvc *silpo.Service,
 	coreAgentURL string,
 	serviceToken string,
@@ -42,6 +44,7 @@ func NewStreamHandler(
 		plans:        plans,
 		tokens:       tokens,
 		users:        users,
+		feedback:     feedback,
 		silpoSvc:     silpoSvc,
 		coreAgentURL: coreAgentURL,
 		serviceToken: serviceToken,
@@ -109,6 +112,14 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 	}
 	note := strings.TrimSpace(c.Query("note", ""))
 	apply := c.QueryBool("apply", false)
+
+	if note == "" {
+		if prevID := strings.TrimSpace(c.Query("plan_id", "")); prevID != "" {
+			if pid, parseErr := uuid.Parse(prevID); parseErr == nil {
+				note = h.buildFeedbackNote(c.Context(), userID, pid)
+			}
+		}
+	}
 
 	fridgeItems := []string{}
 	if fridge := strings.TrimSpace(c.Query("fridge", "")); fridge != "" {
@@ -352,4 +363,35 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 	})
 
 	return nil
+}
+
+func (h *StreamHandler) buildFeedbackNote(ctx context.Context, userID, prevPlanID uuid.UUID) string {
+	if h.feedback == nil {
+		return ""
+	}
+
+	var parts []string
+	tags, err := h.feedback.ListTags(ctx, userID, prevPlanID)
+	if err == nil && len(tags) > 0 {
+		names := make([]string, 0, len(tags))
+		for _, t := range tags {
+			names = append(names, t.Tag)
+		}
+		parts = append(parts, "Теги фідбека: "+strings.Join(names, ","))
+	}
+
+	ratings, err := h.feedback.ListDishRatings(ctx, userID, prevPlanID)
+	if err != nil {
+		var disliked []string
+		for _, r := range ratings {
+			if r.Rating == -1 {
+				disliked = append(disliked, r.DishName)
+			}
+		}
+		if len(disliked) > 0 {
+			parts = append(parts, "Не сподобались страви:"+strings.Join(disliked, ","))
+		}
+	}
+
+	return strings.Join(parts, " ")
 }

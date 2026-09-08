@@ -49,6 +49,53 @@ func migrate(ctx context.Context, pool *pgxpool.Pool) error {
 			content    TEXT,
 			created_at TIMESTAMPTZ DEFAULT NOW()
 		);
+
+		CREATE TABLE IF NOT EXISTS user_settings (
+			id             UUID PRIMARY KEY,
+			user_id        UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			category       TEXT NOT NULL CHECK (category IN ('physical', 'sport', 'diet', 'budget')),
+			payload        JSONB NOT NULL,
+			version        INT NOT NULL DEFAULT 1,
+			effective_from TIMESTAMPTZ NOT NULL,
+			is_draft       BOOLEAN NOT NULL DEFAULT false,
+			created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
+
+		CREATE UNIQUE INDEX IF NOT EXISTS idx_user_settings_draft
+			ON user_settings (user_id, category)
+			WHERE is_draft = true;
+
+		CREATE INDEX IF NOT EXISTS idx_user_settings_active
+			ON user_settings (user_id, category, effective_from DESC, version DESC)
+			WHERE is_draft = false;
+
+		CREATE TABLE IF NOT EXISTS dish_ratings (
+			id         UUID PRIMARY KEY,
+			user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			plan_id    UUID NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
+			dish_name  TEXT NOT NULL,
+			rating     SMALLINT NOT NULL CHECK (rating IN (-1, 0, 1)),
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE (user_id, plan_id, dish_name)
+		);
+
+		CREATE TABLE IF NOT EXISTS feedback_tags (
+			id         UUID PRIMARY KEY,
+			user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			plan_id    UUID NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
+			tag        TEXT NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+			UNIQUE (user_id, plan_id, tag)
+		);
+
+		CREATE TABLE IF NOT EXISTS plan_adjustments (
+			id         UUID PRIMARY KEY,
+			user_id    UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			plan_id    UUID NOT NULL REFERENCES plans(id) ON DELETE CASCADE,
+			type       TEXT NOT NULL CHECK (type IN ('excluded_dish', 'simplified', 'substitution', 'calorie_check')),
+			payload    JSONB NOT NULL,
+			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		);
 	`)
 	return err
 }

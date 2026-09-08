@@ -42,6 +42,8 @@ func main() {
 	userRepo := storage.NewUserRepo(pool)
 	tokenRepo := storage.NewTokenRepo(pool)
 	planRepo := storage.NewPlanRepo(pool)
+	settingsRepo := storage.NewSettingsRepo(pool)
+	feedbackRepo := storage.NewFeedbackRepo(pool)
 
 	// Services.
 	silpoSvc := silpo.NewService(cfg.SilpoRefreshURL)
@@ -49,7 +51,9 @@ func main() {
 	// Handlers.
 	userHandler := handler.NewUserHandler(userRepo, tokenRepo, cfg.JWTSecret)
 	planHandler := handler.NewPlanHandler(planRepo)
-	streamHandler := handler.NewStreamHandler(planRepo, tokenRepo, userRepo, silpoSvc, cfg.CoreAgentURL, cfg.CoreServiceToken)
+	settingsHandler := handler.NewSettingsHandler(settingsRepo)
+	feedbackHandler := handler.NewFeedbackHandler(feedbackRepo)
+	streamHandler := handler.NewStreamHandler(planRepo, tokenRepo, userRepo, feedbackRepo, silpoSvc, cfg.CoreAgentURL, cfg.CoreServiceToken)
 
 	// Fiber app.
 	app := fiber.New(fiber.Config{
@@ -81,6 +85,19 @@ func main() {
 	// Plan routes.
 	auth.Get("/plans", planHandler.List)
 	auth.Get("/plans/:id", planHandler.Get)
+
+	// Settings routes.
+	auth.Get("/settings", settingsHandler.GetAll)
+	auth.Patch("/settings/:category", settingsHandler.Patch)
+	auth.Post("/settings/apply", settingsHandler.Apply)
+	auth.Post("/settings/reset", settingsHandler.Reset)
+
+	// Feedback routes.
+	auth.Post("/plans/:id/ratings", feedbackHandler.RateDish)
+	auth.Get("/plans/:id/ratings", feedbackHandler.ListRatings)
+	auth.Post("/plans/:id/tags", feedbackHandler.ToggleTag)
+	auth.Get("/plans/:id/tags", feedbackHandler.ListTags)
+	auth.Get("/plans/:id/adjustments", feedbackHandler.ListAdjustments)
 
 	// Streaming proxy.
 	auth.Get("/plan/stream", streamHandler.Stream)
