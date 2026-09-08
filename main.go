@@ -49,7 +49,7 @@ func main() {
 	silpoSvc := silpo.NewService(cfg.SilpoRefreshURL)
 
 	// Handlers.
-	userHandler := handler.NewUserHandler(userRepo, tokenRepo, cfg.JWTSecret)
+	userHandler := handler.NewUserHandler(userRepo, tokenRepo, settingsRepo, cfg.JWTSecret)
 	planHandler := handler.NewPlanHandler(planRepo)
 	settingsHandler := handler.NewSettingsHandler(settingsRepo)
 	feedbackHandler := handler.NewFeedbackHandler(feedbackRepo)
