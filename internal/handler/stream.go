@@ -76,31 +76,17 @@ func newStreamClient() *http.Client {
 	}
 }
 
-// coreRequest mirrors the PlanRequest schema of the core agent.
-type coreRequest struct {
-	SilpoAccessToken string       `json:"silpo_access_token"`
-	Profile          coreProfile  `json:"profile"`
-	BudgetUAH        float64      `json:"budget_uah"`
-	WorkoutsPerWeek  int          `json:"workouts_per_week"`
-	FridgeItems      []string     `json:"fridge_items"`
-	Note             string       `json:"note"`
-	PreviousPlan     *interface{} `json:"previous_plan"`
-	Apply            bool         `json:"apply"`
-}
-
-type coreProfile struct {
-	WeightKg       float64  `json:"weight_kg"`
-	TargetWeightKg float64  `json:"target_weight_kg"`
-	HeightCm       *float64 `json:"height_cm"`
-	Age            *int     `json:"age"`
-	Sex            *string  `json:"sex"`
-}
-
 // GET /plan/stream — SSE proxy to the core agent.
 // Requires: Authorization: Bearer <our-jwt>
-// Query params: budget_uah (required), workouts, note, fridge, target_weight,
 //
-//	age, sex, silpo_token (override for testing), plan_id (previous plan)
+// The profile, the budget, the training regime and the food restrictions are
+// read from user_settings and cannot be overridden per request: a screen with a
+// stale copy of the profile used to be able to plan a week against numbers the
+// user never saved, and half the profile came from the DB anyway, so the two
+// halves could disagree.
+//
+// Query params are only what no row holds: note (the user's free text), fridge
+// (comma-separated), plan_id (previous plan to adapt), apply (write to cart).
 func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 	userID := middleware.GetUserID(c)
 
@@ -110,69 +96,29 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "user not found"})
 	}
 
-	// Load user settings (physical data, goals, restrictions, budget).
-	userSettings, _ := h.settings.GetByUserID(c.Context(), userID)
-
-	// Silpo token: query param overrides DB value (useful for testing).
-	var silpoToken string
-	if override := c.Query("silpo_token", ""); override != "" {
-		silpoToken = override
-	} else {
-		silpoToken, err = h.silpoSvc.EnsureValid(c.Context(), h.tokens, userID)
-		if err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": fmt.Sprintf("silpo token unavailable: %v", err),
-			})
-		}
+	// Load user settings: the profile, budget, training regime and restrictions
+	// all come from here, so a failure to read them is a failure of the run.
+	// Planning a week on fallback numbers would produce a plausible plan for
+	// somebody else.
+	userSettings, err := h.settings.GetByUserID(c.Context(), userID)
+	if err != nil || userSettings == nil {
+		log.Printf("[ERROR] failed to load settings for user %s: %v", userID, err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
+			"error": "failed to load user settings",
+		})
 	}
 
-	// Budget: query param or stored weekly_budget.
-	budgetUAH := c.QueryFloat("budget_uah", 0)
-	if budgetUAH <= 0 && userSettings != nil && userSettings.WeeklyBudget > 0 {
-		budgetUAH = userSettings.WeeklyBudget
-	}
-	if budgetUAH <= 0 {
-		budgetUAH = 1500.0 // sane default
+	silpoToken, err := h.silpoSvc.EnsureValid(c.Context(), h.tokens, userID)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": fmt.Sprintf("silpo token unavailable: %v", err),
+		})
 	}
 
-	// Workouts: query param or stored workouts_per_week.
-	workouts := c.QueryInt("workouts", -1)
-	if workouts < 0 {
-		if userSettings != nil {
-			workouts = userSettings.WorkoutsPerWeek
-		} else {
-			workouts = 3
-		}
-	}
-	if workouts > 14 {
-		workouts = 14
-	}
-
+	// Free text from the user, and nothing else: the restrictions used to be
+	// glued in here as Ukrainian prose, and now travel as diet_type, allergens
+	// and excluded_products, which the core can actually act on.
 	note := strings.TrimSpace(c.Query("note", ""))
-	// Append allergens and excluded products from settings into note if present
-	if userSettings != nil {
-		restrictions := []string{}
-		if len(userSettings.Allergens) > 0 {
-			restrictions = append(restrictions, "Алергени: "+strings.Join(userSettings.Allergens, ", "))
-		}
-		if len(userSettings.ExcludedProducts) > 0 {
-			restrictions = append(restrictions, "Виключити: "+strings.Join(userSettings.ExcludedProducts, ", "))
-		}
-		if userSettings.DietType != "" && userSettings.DietType != "БЕЗ ОБМЕЖЕНЬ" {
-			restrictions = append(restrictions, "Дієта: "+userSettings.DietType)
-		}
-		if userSettings.Focus != "" {
-			restrictions = append(restrictions, "Ціль: "+userSettings.Focus)
-		}
-		if len(restrictions) > 0 {
-			combinedRestrictions := strings.Join(restrictions, "; ")
-			if note != "" {
-				note = note + " (" + combinedRestrictions + ")"
-			} else {
-				note = combinedRestrictions
-			}
-		}
-	}
 
 	// Cart writes are on by default: the agent fills the user's Silpo cart with
 	// what it picked, while checkout and payment stay with the user in Silpo.
@@ -201,68 +147,12 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 		}
 	}
 
-	// Build profile with stored settings or sane fallbacks.
-	userWeight := 70.0
-	targetWeight := 70.0
-	userHeight := 175.0
-	userAge := 25
-	userSex := "male"
-
-	if userSettings != nil {
-		if userSettings.Weight > 0 {
-			userWeight = userSettings.Weight
-		}
-		if userSettings.TargetWeight > 0 {
-			targetWeight = userSettings.TargetWeight
-		} else {
-			targetWeight = userWeight
-		}
-		if userSettings.Height > 0 {
-			userHeight = userSettings.Height
-		}
-		if userSettings.Age > 0 {
-			userAge = userSettings.Age
-		}
-		if userSettings.Sex != "" {
-			s := strings.ToLower(userSettings.Sex)
-			if s == "male" || s == "чол." || s == "чоловіча" {
-				userSex = "male"
-			} else if s == "female" || s == "жін." || s == "жіноча" {
-				userSex = "female"
-			}
-		}
-	}
-
-	// Query overrides
-	if qWeight := c.QueryFloat("target_weight", 0); qWeight > 0 {
-		targetWeight = qWeight
-	}
-	if qAge := c.QueryInt("age", 0); qAge >= 10 && qAge <= 120 {
-		userAge = qAge
-	}
-	if qSex := strings.ToLower(strings.TrimSpace(c.Query("sex", ""))); qSex == "male" || qSex == "female" {
-		userSex = qSex
-	}
-
-	profile := coreProfile{
-		WeightKg:       userWeight,
-		TargetWeightKg: targetWeight,
-		HeightCm:       &userHeight,
-		Age:            &userAge,
-		Sex:            &userSex,
-	}
-
 	// Send request to core agent.
-	bodyBytes, _ := json.Marshal(coreRequest{
-		SilpoAccessToken: silpoToken,
-		Profile:          profile,
-		BudgetUAH:        budgetUAH,
-		WorkoutsPerWeek:  workouts,
-		FridgeItems:      fridgeItems,
-		Note:             note,
-		PreviousPlan:     previousPlan,
-		Apply:            apply,
-	})
+	bodyBytes, err := json.Marshal(buildCoreRequest(userSettings, silpoToken, note, fridgeItems, previousPlan, apply))
+	if err != nil {
+		log.Printf("[ERROR] failed to build upstream body for user %s: %v", userID, err)
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to build upstream request"})
+	}
 
 	upstream := h.coreAgentURL + "/plan/stream"
 	// Cancelling this context aborts the upstream run. It is cancelled when the
