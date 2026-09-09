@@ -25,6 +25,7 @@ type StreamHandler struct {
 	tokens       *storage.TokenRepo
 	users        *storage.UserRepo
 	settings     *storage.SettingsRepo
+	feedbacks    *storage.FeedbackRepo
 	silpoSvc     *silpo.Service
 	coreAgentURL string
 	serviceToken string
@@ -36,6 +37,7 @@ func NewStreamHandler(
 	tokens *storage.TokenRepo,
 	users *storage.UserRepo,
 	settings *storage.SettingsRepo,
+	feedbacks *storage.FeedbackRepo,
 	silpoSvc *silpo.Service,
 	coreAgentURL string,
 	serviceToken string,
@@ -45,6 +47,7 @@ func NewStreamHandler(
 		tokens:       tokens,
 		users:        users,
 		settings:     settings,
+		feedbacks:    feedbacks,
 		silpoSvc:     silpoSvc,
 		coreAgentURL: coreAgentURL,
 		serviceToken: serviceToken,
@@ -147,8 +150,11 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 		}
 	}
 
+	// Load latest user feedback if available (to adapt next plan based on dish ratings & tags).
+	latestFeedback, _ := h.feedbacks.GetLatestByUserID(c.Context(), userID)
+
 	// Send request to core agent.
-	bodyBytes, err := json.Marshal(buildCoreRequest(userSettings, silpoToken, note, fridgeItems, previousPlan, apply))
+	bodyBytes, err := json.Marshal(buildCoreRequest(userSettings, silpoToken, note, fridgeItems, previousPlan, apply, latestFeedback))
 	if err != nil {
 		log.Printf("[ERROR] failed to build upstream body for user %s: %v", userID, err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to build upstream request"})

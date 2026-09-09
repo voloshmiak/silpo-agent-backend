@@ -156,6 +156,7 @@ func buildCoreRequest(
 	fridgeItems []string,
 	previousPlan *interface{},
 	apply bool,
+	fb *storage.Feedback,
 ) coreRequest {
 	weight := s.Weight
 	if weight <= 0 {
@@ -205,6 +206,32 @@ func buildCoreRequest(
 		profile.Sex = &sex
 	}
 
+	excludedProducts := nonNilStrings(s.ExcludedProducts)
+	effectiveNote := note
+
+	if fb != nil {
+		// Exclude dishes rated as "bad"
+		for _, dish := range fb.DishRatings {
+			if dish.Rating == "bad" && dish.Title != "" {
+				excludedProducts = append(excludedProducts, dish.Title)
+			}
+		}
+
+		// Append feedback notes
+		feedbackNotes := []string{}
+		if len(fb.Tags) > 0 {
+			feedbackNotes = append(feedbackNotes, "Враховано фідбек: "+strings.Join(fb.Tags, ", "))
+		}
+		if len(feedbackNotes) > 0 {
+			extra := strings.Join(feedbackNotes, "; ")
+			if effectiveNote != "" {
+				effectiveNote = effectiveNote + " (" + extra + ")"
+			} else {
+				effectiveNote = extra
+			}
+		}
+	}
+
 	return coreRequest{
 		SilpoAccessToken: silpoToken,
 		Profile:          profile,
@@ -217,9 +244,9 @@ func buildCoreRequest(
 		WorkoutSchedule:  normalizeSchedule(s.WorkoutSchedule),
 		DietType:         normalize(dietAliases, s.DietType),
 		Allergens:        nonNilStrings(s.Allergens),
-		ExcludedProducts: nonNilStrings(s.ExcludedProducts),
+		ExcludedProducts: excludedProducts,
 		FridgeItems:      nonNilStrings(fridgeItems),
-		Note:             note,
+		Note:             effectiveNote,
 		PreviousPlan:     previousPlan,
 		Apply:            apply,
 	}

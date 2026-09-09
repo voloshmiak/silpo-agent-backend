@@ -79,6 +79,17 @@ func migrate(ctx context.Context, pool *pgxpool.Pool) error {
 			content    TEXT,
 			created_at TIMESTAMPTZ DEFAULT NOW()
 		);
+
+		CREATE TABLE IF NOT EXISTS feedbacks (
+			id           UUID PRIMARY KEY,
+			user_id      UUID REFERENCES users(id) ON DELETE CASCADE,
+			plan_id      UUID REFERENCES plans(id) ON DELETE SET NULL,
+			dish_ratings JSONB NOT NULL DEFAULT '[]'::jsonb,
+			tags         TEXT[] NOT NULL DEFAULT '{}',
+			summary      TEXT,
+			decisions    JSONB NOT NULL DEFAULT '[]'::jsonb,
+			created_at   TIMESTAMPTZ DEFAULT NOW()
+		);
 	`)
 	return err
 }

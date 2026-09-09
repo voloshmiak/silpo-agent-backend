@@ -44,6 +44,7 @@ func main() {
 	settingsRepo := storage.NewSettingsRepo(pool)
 	tokenRepo := storage.NewTokenRepo(pool)
 	planRepo := storage.NewPlanRepo(pool)
+	feedbackRepo := storage.NewFeedbackRepo(pool)
 
 	// Services.
 	silpoSvc := silpo.NewService(cfg.SilpoRefreshURL)
@@ -52,7 +53,8 @@ func main() {
 	// Handlers.
 	userHandler := handler.NewUserHandler(userRepo, settingsRepo, tokenRepo, mailer, cfg.JWTSecret)
 	planHandler := handler.NewPlanHandler(planRepo)
-	streamHandler := handler.NewStreamHandler(planRepo, tokenRepo, userRepo, settingsRepo, silpoSvc, cfg.CoreAgentURL, cfg.CoreServiceToken)
+	feedbackHandler := handler.NewFeedbackHandler(feedbackRepo, settingsRepo)
+	streamHandler := handler.NewStreamHandler(planRepo, tokenRepo, userRepo, settingsRepo, feedbackRepo, silpoSvc, cfg.CoreAgentURL, cfg.CoreServiceToken)
 
 	// Fiber app.
 	app := fiber.New(fiber.Config{
@@ -85,6 +87,11 @@ func main() {
 	auth.Get("/users/me/settings", userHandler.GetSettings)
 	auth.Put("/users/me/settings", userHandler.UpdateSettings)
 	auth.Post("/users/me/silpo-token", userHandler.SaveSilpoToken)
+
+	// Feedback routes.
+	auth.Post("/feedbacks", feedbackHandler.Create)
+	auth.Post("/feedbacks/preview", feedbackHandler.Preview)
+	auth.Get("/feedbacks/latest", feedbackHandler.GetLatest)
 
 	// Plan routes.
 	auth.Get("/plans", planHandler.List)
