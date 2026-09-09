@@ -13,6 +13,7 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/recover"
 	"github.com/joho/godotenv"
 	"github.com/voloshmiak/silpo-agent-backend/internal/config"
+	"github.com/voloshmiak/silpo-agent-backend/internal/email"
 	"github.com/voloshmiak/silpo-agent-backend/internal/handler"
 	mw "github.com/voloshmiak/silpo-agent-backend/internal/middleware"
 	"github.com/voloshmiak/silpo-agent-backend/internal/silpo"
@@ -46,9 +47,10 @@ func main() {
 
 	// Services.
 	silpoSvc := silpo.NewService(cfg.SilpoRefreshURL)
+	mailer := email.NewMailer(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUser, cfg.SMTPPass, cfg.SMTPFrom)
 
 	// Handlers.
-	userHandler := handler.NewUserHandler(userRepo, settingsRepo, tokenRepo, cfg.JWTSecret)
+	userHandler := handler.NewUserHandler(userRepo, settingsRepo, tokenRepo, mailer, cfg.JWTSecret)
 	planHandler := handler.NewPlanHandler(planRepo)
 	streamHandler := handler.NewStreamHandler(planRepo, tokenRepo, userRepo, settingsRepo, silpoSvc, cfg.CoreAgentURL, cfg.CoreServiceToken)
 
@@ -74,9 +76,12 @@ func main() {
 
 	// User routes.
 	app.Post("/users", userHandler.Register)
+	app.Post("/users/login", userHandler.Login)
+
 	auth := app.Group("", mw.RequireAuth(cfg.JWTSecret))
 	auth.Get("/users/me", userHandler.GetMe)
 	auth.Put("/users/me", userHandler.UpdateMe)
+	auth.Put("/users/me/password", userHandler.ChangePassword)
 	auth.Get("/users/me/settings", userHandler.GetSettings)
 	auth.Put("/users/me/settings", userHandler.UpdateSettings)
 	auth.Post("/users/me/silpo-token", userHandler.SaveSilpoToken)

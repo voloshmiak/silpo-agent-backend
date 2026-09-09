@@ -27,11 +27,15 @@ func NewPool(ctx context.Context, databaseURL string) (*pgxpool.Pool, error) {
 func migrate(ctx context.Context, pool *pgxpool.Pool) error {
 	_, err := pool.Exec(ctx, `
 		CREATE TABLE IF NOT EXISTS users (
-			id         UUID PRIMARY KEY,
-			name       TEXT,
-			created_at TIMESTAMPTZ DEFAULT NOW()
+			id            UUID PRIMARY KEY,
+			name          TEXT,
+			email         TEXT UNIQUE,
+			password_hash TEXT,
+			created_at    TIMESTAMPTZ DEFAULT NOW()
 		);
 
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS email TEXT UNIQUE;
+		ALTER TABLE users ADD COLUMN IF NOT EXISTS password_hash TEXT;
 		ALTER TABLE users DROP COLUMN IF EXISTS weight;
 		ALTER TABLE users DROP COLUMN IF EXISTS height;
 
