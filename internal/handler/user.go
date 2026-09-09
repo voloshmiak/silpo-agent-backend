@@ -9,26 +9,26 @@ import (
 
 type UserHandler struct {
 	users     *storage.UserRepo
-	settings  *storage.SettingsRepo
 	tokens    *storage.TokenRepo
+	settings  *storage.SettingsRepo
 	jwtSecret string
 }
 
 func NewUserHandler(
 	users *storage.UserRepo,
-	settings *storage.SettingsRepo,
 	tokens *storage.TokenRepo,
+	settings *storage.SettingsRepo,
 	jwtSecret string,
 ) *UserHandler {
 	return &UserHandler{
 		users:     users,
-		settings:  settings,
 		tokens:    tokens,
+		settings:  settings,
 		jwtSecret: jwtSecret,
 	}
 }
 
-// POST /users — register (open endpoint, accepts optional silpo_token / access_token)
+// Register handles POST /users — an open endpoint that accepts an optional silpo_token / access_token.
 func (h *UserHandler) Register(c *fiber.Ctx) error {
 	var body struct {
 		Name         string `json:"name"`
@@ -45,7 +45,7 @@ func (h *UserHandler) Register(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 
-	// If MCP token was provided during registration, save it immediately
+	// If an MCP token was provided during registration, save it immediately.
 	mcpToken := body.SilpoToken
 	if mcpToken == "" {
 		mcpToken = body.AccessToken
@@ -58,9 +58,6 @@ func (h *UserHandler) Register(c *fiber.Ctx) error {
 		})
 	}
 
-	// Initialize default user settings in DB
-	_, _ = h.settings.GetByUserID(c.Context(), user.ID)
-
 	token, err := auth.GenerateToken(user.ID, h.jwtSecret)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to generate token"})
@@ -72,7 +69,7 @@ func (h *UserHandler) Register(c *fiber.Ctx) error {
 	})
 }
 
-// GET /users/me — get basic profile (name, id, created_at)
+// GetMe handles GET /users/me — returns the basic profile (name, id, created_at).
 func (h *UserHandler) GetMe(c *fiber.Ctx) error {
 	userID := middleware.GetUserID(c)
 	user, err := h.users.GetByID(c.Context(), userID)
@@ -82,7 +79,7 @@ func (h *UserHandler) GetMe(c *fiber.Ctx) error {
 	return c.JSON(user)
 }
 
-// PUT /users/me — update user name
+// UpdateMe handles PUT /users/me — updates the user's name.
 func (h *UserHandler) UpdateMe(c *fiber.Ctx) error {
 	userID := middleware.GetUserID(c)
 
@@ -100,34 +97,7 @@ func (h *UserHandler) UpdateMe(c *fiber.Ctx) error {
 	return c.JSON(user)
 }
 
-// GET /users/me/settings — get all user parameters, physical metrics & restrictions
-func (h *UserHandler) GetSettings(c *fiber.Ctx) error {
-	userID := middleware.GetUserID(c)
-	s, err := h.settings.GetByUserID(c.Context(), userID)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
-	}
-	return c.JSON(s)
-}
-
-// PUT /users/me/settings — save/update user parameters, physical metrics & restrictions
-func (h *UserHandler) UpdateSettings(c *fiber.Ctx) error {
-	userID := middleware.GetUserID(c)
-
-	var s storage.UserSettings
-	if err := c.BodyParser(&s); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON body: " + err.Error()})
-	}
-	s.UserID = userID
-
-	updated, err := h.settings.Upsert(c.Context(), &s)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
-	}
-	return c.JSON(updated)
-}
-
-// POST /users/me/silpo-token — save Silpo access + refresh token
+// SaveSilpoToken handles POST /users/me/silpo-token — saves the Silpo access and refresh tokens.
 func (h *UserHandler) SaveSilpoToken(c *fiber.Ctx) error {
 	userID := middleware.GetUserID(c)
 
@@ -150,6 +120,29 @@ func (h *UserHandler) SaveSilpoToken(c *fiber.Ctx) error {
 	if err := h.tokens.Upsert(c.Context(), t); err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-
 	return c.JSON(fiber.Map{"status": "ok"})
+}
+func (h *UserHandler) GetSettings(c *fiber.Ctx) error {
+	userID := middleware.GetUserID(c)
+
+	settings, err := h.settings.GetFlat(c.Context(), userID)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(settings)
+}
+
+func (h *UserHandler) PutSettings(c *fiber.Ctx) error {
+	userID := middleware.GetUserID(c)
+
+	var body storage.FlatSettingsInput
+	if err := c.BodyParser(&body); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON"})
+	}
+
+	settings, err := h.settings.PutFlat(c.Context(), userID, body)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(settings)
 }

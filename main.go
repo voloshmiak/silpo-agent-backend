@@ -40,17 +40,20 @@ func main() {
 
 	// Repositories.
 	userRepo := storage.NewUserRepo(pool)
-	settingsRepo := storage.NewSettingsRepo(pool)
 	tokenRepo := storage.NewTokenRepo(pool)
 	planRepo := storage.NewPlanRepo(pool)
+	settingsRepo := storage.NewSettingsRepo(pool)
+	feedbackRepo := storage.NewFeedbackRepo(pool)
 
 	// Services.
 	silpoSvc := silpo.NewService(cfg.SilpoRefreshURL)
 
 	// Handlers.
-	userHandler := handler.NewUserHandler(userRepo, settingsRepo, tokenRepo, cfg.JWTSecret)
+	userHandler := handler.NewUserHandler(userRepo, tokenRepo, settingsRepo, cfg.JWTSecret)
 	planHandler := handler.NewPlanHandler(planRepo)
-	streamHandler := handler.NewStreamHandler(planRepo, tokenRepo, userRepo, settingsRepo, silpoSvc, cfg.CoreAgentURL, cfg.CoreServiceToken)
+	settingsHandler := handler.NewSettingsHandler(settingsRepo)
+	feedbackHandler := handler.NewFeedbackHandler(feedbackRepo)
+	streamHandler := handler.NewStreamHandler(planRepo, tokenRepo, userRepo, feedbackRepo, settingsRepo, silpoSvc, cfg.CoreAgentURL, cfg.CoreServiceToken)
 
 	// Fiber app.
 	app := fiber.New(fiber.Config{
@@ -77,13 +80,26 @@ func main() {
 	auth := app.Group("", mw.RequireAuth(cfg.JWTSecret))
 	auth.Get("/users/me", userHandler.GetMe)
 	auth.Put("/users/me", userHandler.UpdateMe)
-	auth.Get("/users/me/settings", userHandler.GetSettings)
-	auth.Put("/users/me/settings", userHandler.UpdateSettings)
 	auth.Post("/users/me/silpo-token", userHandler.SaveSilpoToken)
+	auth.Get("/users/me/settings", userHandler.GetSettings)
+	auth.Put("/users/me/settings", userHandler.PutSettings)
 
 	// Plan routes.
 	auth.Get("/plans", planHandler.List)
 	auth.Get("/plans/:id", planHandler.Get)
+
+	// Settings routes.
+	auth.Get("/settings", settingsHandler.GetAll)
+	auth.Patch("/settings/:category", settingsHandler.Patch)
+	auth.Post("/settings/apply", settingsHandler.Apply)
+	auth.Post("/settings/reset", settingsHandler.Reset)
+
+	// Feedback routes.
+	auth.Post("/plans/:id/ratings", feedbackHandler.RateDish)
+	auth.Get("/plans/:id/ratings", feedbackHandler.ListRatings)
+	auth.Post("/plans/:id/tags", feedbackHandler.ToggleTag)
+	auth.Get("/plans/:id/tags", feedbackHandler.ListTags)
+	auth.Get("/plans/:id/adjustments", feedbackHandler.ListAdjustments)
 
 	// Streaming proxy.
 	auth.Get("/plan/stream", streamHandler.Stream)
