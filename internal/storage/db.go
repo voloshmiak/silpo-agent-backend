@@ -90,6 +90,8 @@ func migrate(ctx context.Context, pool *pgxpool.Pool) error {
 			decisions    JSONB NOT NULL DEFAULT '[]'::jsonb,
 			created_at   TIMESTAMPTZ DEFAULT NOW()
 		);
+ 			ALTER TABLE feedbacks DROP COLUMN IF EXISTS summary;
+       		ALTER TABLE feedbacks DROP COLUMN IF EXISTS decisions;
 	`)
 	return err
 }

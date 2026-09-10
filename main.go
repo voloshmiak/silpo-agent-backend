@@ -53,7 +53,7 @@ func main() {
 	// Handlers.
 	userHandler := handler.NewUserHandler(userRepo, settingsRepo, tokenRepo, mailer, cfg.JWTSecret)
 	planHandler := handler.NewPlanHandler(planRepo)
-	feedbackHandler := handler.NewFeedbackHandler(feedbackRepo, settingsRepo)
+	feedbackHandler := handler.NewFeedbackHandler(feedbackRepo)
 	streamHandler := handler.NewStreamHandler(planRepo, tokenRepo, userRepo, settingsRepo, feedbackRepo, silpoSvc, cfg.CoreAgentURL, cfg.CoreServiceToken)
 
 	// Fiber app.
@@ -90,7 +90,6 @@ func main() {
 
 	// Feedback routes.
 	auth.Post("/feedbacks", feedbackHandler.Create)
-	auth.Post("/feedbacks/preview", feedbackHandler.Preview)
 	auth.Get("/feedbacks/latest", feedbackHandler.GetLatest)
 
 	// Plan routes.
