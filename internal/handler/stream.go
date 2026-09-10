@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"strings"
@@ -26,6 +27,7 @@ type StreamHandler struct {
 	users        *storage.UserRepo
 	settings     *storage.SettingsRepo
 	feedbacks    *storage.FeedbackRepo
+	progress     *storage.ProgressRepo
 	silpoSvc     *silpo.Service
 	coreAgentURL string
 	serviceToken string
@@ -38,6 +40,7 @@ func NewStreamHandler(
 	users *storage.UserRepo,
 	settings *storage.SettingsRepo,
 	feedbacks *storage.FeedbackRepo,
+	progress *storage.ProgressRepo,
 	silpoSvc *silpo.Service,
 	coreAgentURL string,
 	serviceToken string,
@@ -48,6 +51,7 @@ func NewStreamHandler(
 		users:        users,
 		settings:     settings,
 		feedbacks:    feedbacks,
+		progress:     progress,
 		silpoSvc:     silpoSvc,
 		coreAgentURL: coreAgentURL,
 		serviceToken: serviceToken,
@@ -292,6 +296,28 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 				log.Printf("[ERROR] failed to create plan in DB for user %s: %v", userID, err)
 			} else {
 				log.Printf("[INFO] plan created successfully: id=%s for user %s", p.ID, userID)
+
+				if h.progress != nil {
+					cost := calculatePlanCost(contentObj.Plan, userSettings.WeeklyBudget)
+					count, _ := h.progress.CountExpenses(saveCtx, userID)
+					weekNum := count + 1
+					weekLabel := fmt.Sprintf("Т%d", weekNum)
+					_, expErr := h.progress.RecordExpense(saveCtx, &storage.ExpenseRecord{
+						UserID:      userID,
+						PlanID:      &p.ID,
+						WeekNumber:  weekNum,
+						WeekLabel:   weekLabel,
+						TotalCost:   cost,
+						BudgetLimit: userSettings.WeeklyBudget,
+						RecordedAt:  time.Now(),
+					})
+					if expErr != nil {
+						log.Printf("[WARN] failed to record weekly expense for user %s: %v", userID, expErr)
+					} else {
+						log.Printf("[INFO] recorded weekly expense for user %s: week=%s cost=%.2f limit=%.2f",
+							userID, weekLabel, cost, userSettings.WeeklyBudget)
+					}
+				}
 			}
 		}
 
@@ -394,4 +420,43 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 	})
 
 	return nil
+}
+
+func calculatePlanCost(planObj interface{}, fallbackBudget float64) float64 {
+	if planObj == nil {
+		return fallbackBudget
+	}
+	m, ok := planObj.(map[string]interface{})
+	if !ok {
+		return fallbackBudget
+	}
+	if items, ok := m["cart_items"].([]interface{}); ok && len(items) > 0 {
+		var sum float64
+		for _, it := range items {
+			if itemMap, ok := it.(map[string]interface{}); ok {
+				var price float64
+				switch p := itemMap["price"].(type) {
+				case float64:
+					price = p
+				case int:
+					price = float64(p)
+				}
+				qty := 1.0
+				switch q := itemMap["quantity"].(type) {
+				case float64:
+					qty = q
+				case int:
+					qty = float64(q)
+				}
+				sum += price * qty
+			}
+		}
+		if sum > 0 {
+			return math.Round(sum*100) / 100
+		}
+	}
+	if b, ok := m["budget_uah"].(float64); ok && b > 0 {
+		return b
+	}
+	return fallbackBudget
 }

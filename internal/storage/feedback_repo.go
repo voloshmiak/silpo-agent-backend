@@ -18,21 +18,13 @@ type DishRating struct {
 	Rating      string `json:"rating"` // "good", "neutral", "bad"
 }
 
-type DecisionItem struct {
-	Badge      string `json:"badge"`      // "ВИЛУЧЕНО", "СПРОЩЕНО", "СІЛЬПО", "КАЛОРІЇ"
-	BadgeColor string `json:"badgeColor"` // tailwind class або колір для фронту
-	Text       string `json:"text"`
-}
-
 type Feedback struct {
-	ID          uuid.UUID      `json:"id"`
-	UserID      uuid.UUID      `json:"user_id"`
-	PlanID      *uuid.UUID     `json:"plan_id,omitempty"`
-	DishRatings []DishRating   `json:"dish_ratings"`
-	Tags        []string       `json:"tags"`
-	Summary     string         `json:"summary"`
-	Decisions   []DecisionItem `json:"decisions"`
-	CreatedAt   time.Time      `json:"created_at"`
+	ID          uuid.UUID    `json:"id"`
+	UserID      uuid.UUID    `json:"user_id"`
+	PlanID      *uuid.UUID   `json:"plan_id,omitempty"`
+	DishRatings []DishRating `json:"dish_ratings"`
+	Tags        []string     `json:"tags"`
+	CreatedAt   time.Time    `json:"created_at"`
 }
 
 type FeedbackRepo struct {
@@ -53,25 +45,17 @@ func (r *FeedbackRepo) Create(ctx context.Context, f *Feedback) (*Feedback, erro
 	if f.Tags == nil {
 		f.Tags = []string{}
 	}
-	if f.Decisions == nil {
-		f.Decisions = []DecisionItem{}
-	}
 
 	dishRatingsJSON, err := json.Marshal(f.DishRatings)
 	if err != nil {
 		dishRatingsJSON = []byte("[]")
 	}
 
-	decisionsJSON, err := json.Marshal(f.Decisions)
-	if err != nil {
-		decisionsJSON = []byte("[]")
-	}
-
 	err = r.pool.QueryRow(ctx, `
-		INSERT INTO feedbacks (id, user_id, plan_id, dish_ratings, tags, summary, decisions, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+		INSERT INTO feedbacks (id, user_id, plan_id, dish_ratings, tags, created_at)
+		VALUES ($1, $2, $3, $4, $5, NOW())
 		RETURNING id, user_id, plan_id, created_at
-	`, f.ID, f.UserID, f.PlanID, dishRatingsJSON, f.Tags, f.Summary, decisionsJSON).Scan(
+	`, f.ID, f.UserID, f.PlanID, dishRatingsJSON, f.Tags).Scan(
 		&f.ID, &f.UserID, &f.PlanID, &f.CreatedAt,
 	)
 	if err != nil {
@@ -83,23 +67,22 @@ func (r *FeedbackRepo) Create(ctx context.Context, f *Feedback) (*Feedback, erro
 
 func (r *FeedbackRepo) GetLatestByUserID(ctx context.Context, userID uuid.UUID) (*Feedback, error) {
 	f := &Feedback{}
-	var dishRatingsJSON, decisionsJSON []byte
+	var dishRatingsJSON []byte
 
 	err := r.pool.QueryRow(ctx, `
-		SELECT id, user_id, plan_id, dish_ratings, tags, COALESCE(summary, ''), decisions, created_at
+		SELECT id, user_id, plan_id, dish_ratings, tags, created_at
 		FROM feedbacks
 		WHERE user_id = $1
 		ORDER BY created_at DESC
 		LIMIT 1
 	`, userID).Scan(
-		&f.ID, &f.UserID, &f.PlanID, &dishRatingsJSON, &f.Tags, &f.Summary, &decisionsJSON, &f.CreatedAt,
+		&f.ID, &f.UserID, &f.PlanID, &dishRatingsJSON, &f.Tags, &f.CreatedAt,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("get latest feedback: %w", err)
 	}
 
 	_ = json.Unmarshal(dishRatingsJSON, &f.DishRatings)
-	_ = json.Unmarshal(decisionsJSON, &f.Decisions)
 	if f.Tags == nil {
 		f.Tags = []string{}
 	}
@@ -109,7 +92,7 @@ func (r *FeedbackRepo) GetLatestByUserID(ctx context.Context, userID uuid.UUID) 
 
 func (r *FeedbackRepo) ListByUserID(ctx context.Context, userID uuid.UUID, limit, offset int) ([]*Feedback, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, user_id, plan_id, dish_ratings, tags, COALESCE(summary, ''), decisions, created_at
+		SELECT id, user_id, plan_id, dish_ratings, tags, created_at
 		FROM feedbacks
 		WHERE user_id = $1
 		ORDER BY created_at DESC
@@ -123,14 +106,13 @@ func (r *FeedbackRepo) ListByUserID(ctx context.Context, userID uuid.UUID, limit
 	var feedbacks []*Feedback
 	for rows.Next() {
 		f := &Feedback{}
-		var dishRatingsJSON, decisionsJSON []byte
+		var dishRatingsJSON []byte
 		if err := rows.Scan(
-			&f.ID, &f.UserID, &f.PlanID, &dishRatingsJSON, &f.Tags, &f.Summary, &decisionsJSON, &f.CreatedAt,
+			&f.ID, &f.UserID, &f.PlanID, &dishRatingsJSON, &f.Tags, &f.CreatedAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan feedback: %w", err)
 		}
 		_ = json.Unmarshal(dishRatingsJSON, &f.DishRatings)
-		_ = json.Unmarshal(decisionsJSON, &f.Decisions)
 		if f.Tags == nil {
 			f.Tags = []string{}
 		}

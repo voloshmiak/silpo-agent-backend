@@ -86,10 +86,37 @@ func migrate(ctx context.Context, pool *pgxpool.Pool) error {
 			plan_id      UUID REFERENCES plans(id) ON DELETE SET NULL,
 			dish_ratings JSONB NOT NULL DEFAULT '[]'::jsonb,
 			tags         TEXT[] NOT NULL DEFAULT '{}',
-			summary      TEXT,
-			decisions    JSONB NOT NULL DEFAULT '[]'::jsonb,
 			created_at   TIMESTAMPTZ DEFAULT NOW()
 		);
+
+		ALTER TABLE feedbacks DROP COLUMN IF EXISTS summary;
+		ALTER TABLE feedbacks DROP COLUMN IF EXISTS decisions;
+
+		CREATE TABLE IF NOT EXISTS weight_history (
+			id          UUID PRIMARY KEY,
+			user_id     UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			weight      DOUBLE PRECISION NOT NULL,
+			recorded_at DATE NOT NULL DEFAULT CURRENT_DATE,
+			created_at  TIMESTAMPTZ DEFAULT NOW(),
+			UNIQUE(user_id, recorded_at)
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_weight_history_user_date ON weight_history(user_id, recorded_at ASC);
+
+		CREATE TABLE IF NOT EXISTS weekly_expenses (
+			id           UUID PRIMARY KEY,
+			user_id      UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+			plan_id      UUID REFERENCES plans(id) ON DELETE SET NULL,
+			week_number  INT NOT NULL DEFAULT 1,
+			week_label   TEXT NOT NULL DEFAULT '',
+			total_cost   DOUBLE PRECISION NOT NULL,
+			budget_limit DOUBLE PRECISION NOT NULL,
+			is_overspent BOOLEAN NOT NULL DEFAULT false,
+			recorded_at  DATE NOT NULL DEFAULT CURRENT_DATE,
+			created_at   TIMESTAMPTZ DEFAULT NOW()
+		);
+
+		CREATE INDEX IF NOT EXISTS idx_weekly_expenses_user ON weekly_expenses(user_id, recorded_at ASC);
 	`)
 	return err
 }
