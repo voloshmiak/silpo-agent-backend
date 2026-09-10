@@ -111,6 +111,11 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 		})
 	}
 
+	log.Printf("[INFO] user %s settings loaded: budget=%.0f UAH, focus=%q, weight=%.1f→%.1f, workouts=%d, updated_at=%s",
+		userID, userSettings.WeeklyBudget, userSettings.Focus,
+		userSettings.Weight, userSettings.TargetWeight, userSettings.WorkoutsPerWeek,
+		userSettings.UpdatedAt.Format(time.RFC3339))
+
 	silpoToken, err := h.silpoSvc.EnsureValid(c.Context(), h.tokens, userID)
 	if err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
@@ -142,9 +147,19 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 	if prevID := strings.TrimSpace(c.Query("plan_id", "")); prevID != "" {
 		if pid, parseErr := uuid.Parse(prevID); parseErr == nil {
 			if prev, loadErr := h.plans.GetByID(c.Context(), pid, userID); loadErr == nil {
-				var planObj interface{}
-				if json.Unmarshal([]byte(prev.Content), &planObj) == nil {
+				var stored map[string]interface{}
+				if json.Unmarshal([]byte(prev.Content), &stored) == nil {
+					// What we persist is a wrapper — answer, plan_data, raw_text —
+					// and raw_text is the whole SSE transcript of that run. Sending
+					// the wrapper upstream shipped tens of thousands of tokens the
+					// core cannot read and left it with no usable history at all.
+					// Only plan_data is a Plan.
+					planObj, ok := stored["plan_data"]
+					if !ok {
+						planObj = interface{}(stored)
+					}
 					previousPlan = &planObj
+					log.Printf("[INFO] previous plan %s loaded for user %s (unwrapped=%t)", pid, userID, ok)
 				}
 			}
 		}
