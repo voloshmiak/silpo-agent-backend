@@ -3,37 +3,40 @@ package storage
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type UserSettings struct {
-	UserID             uuid.UUID         `json:"user_id"`
+	UserID uuid.UUID `json:"user_id"`
 	// Фізичні дані та ціль
-	Weight             float64           `json:"weight"`               // Поточна вага (кг)
-	TargetWeight       float64           `json:"target_weight"`        // Цільова вага (кг)
-	Height             float64           `json:"height"`               // Зріст (см)
-	Age                int               `json:"age"`                  // Вік
-	Sex                string            `json:"sex"`                  // Стать (male / female або чол. / жін.)
-	Focus              string            `json:"focus"`                // Фокус: Схуднення / Підтримання / Набір маси
-	WeeklyPace         float64           `json:"weekly_pace"`          // Темп: наприклад -0.6 кг / тиждень
+	Weight       float64 `json:"weight"`        // Поточна вага (кг)
+	TargetWeight float64 `json:"target_weight"` // Цільова вага (кг)
+	Height       float64 `json:"height"`        // Зріст (см)
+	Age          int     `json:"age"`           // Вік
+	Sex          string  `json:"sex"`           // Стать (male / female або чол. / жін.)
+	Focus        string  `json:"focus"`         // Фокус: Схуднення / Підтримання / Набір маси
+	WeeklyPace   float64 `json:"weekly_pace"`   // Темп: наприклад -0.6 кг / тиждень
 	// Спортивний режим
 	WorkoutsPerWeek    int               `json:"workouts_per_week"`    // Кількість занять на тиждень
 	WorkoutSchedule    map[string]string `json:"workout_schedule"`     // Розклад, наприклад {"ПН": "силові", "ВТ": "кардіо"}
 	MissedWorkoutToday bool              `json:"missed_workout_today"` // Пропустив тренування сьогодні
 	// Харчові обмеження
-	Allergens          []string          `json:"allergens"`            // Алергени, наприклад ["лактоза", "горіхи"]
-	ExcludedProducts   []string          `json:"excluded_products"`    // Стоп-продукти, наприклад ["гриби", "кінза", "печінка"]
-	DietType           string            `json:"diet_type"`            // Тип харчування, наприклад "БЕЗ ОБМЕЖЕНЬ"
+	Allergens        []string `json:"allergens"`         // Алергени, наприклад ["лактоза", "горіхи"]
+	ExcludedProducts []string `json:"excluded_products"` // Стоп-продукти, наприклад ["гриби", "кінза", "печінка"]
+	DietType         string   `json:"diet_type"`         // Тип харчування, наприклад "БЕЗ ОБМЕЖЕНЬ"
 	// Бюджет на тиждень
-	WeeklyBudget       float64           `json:"weekly_budget"`        // Ліміт витрат (грн), наприклад 2000
-	PromoPriority      string            `json:"promo_priority"`       // Пріоритет акцій: Високий / Середній / Низький
-	DeliveryIncluded   bool              `json:"delivery_included"`    // Доставка включена в бюджет
+	WeeklyBudget     float64 `json:"weekly_budget"`     // Ліміт витрат (грн), наприклад 2000
+	PromoPriority    string  `json:"promo_priority"`    // Пріоритет акцій: Високий / Середній / Низький
+	DeliveryIncluded bool    `json:"delivery_included"` // Доставка включена в бюджет
 	// Службові
-	UpdatedAt          time.Time         `json:"updated_at"`           // Дата останнього оновлення
+	UpdatedAt time.Time `json:"updated_at"` // Дата останнього оновлення
 }
 
 type SettingsRepo struct {
@@ -130,7 +133,16 @@ func (r *SettingsRepo) GetByUserID(ctx context.Context, userID uuid.UUID) (*User
 		&s.WeeklyBudget, &s.PromoPriority, &s.DeliveryIncluded, &s.UpdatedAt,
 	)
 	if err != nil {
-		// Return default settings matching the UI design
+		// Only a missing row is a normal state: a user who has not opened the
+		// settings page yet gets the demo profile. Anything else — a dead pool,
+		// a scan mismatch after a migration — is a real failure and must reach
+		// the handler, which refuses to plan a week on somebody else's numbers.
+		// Swallowing it used to pin every run to the fallback budget of 2000 UAH
+		// no matter what the user had saved.
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return nil, fmt.Errorf("load user settings %s: %w", userID, err)
+		}
+		log.Printf("[WARN] user %s has no settings row, planning on demo defaults", userID)
 		return &UserSettings{
 			UserID:             userID,
 			Weight:             78.4,

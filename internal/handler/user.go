@@ -2,6 +2,7 @@ package handler
 
 import (
 	"strings"
+	"time"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/voloshmiak/silpo-agent-backend/internal/auth"
@@ -14,6 +15,7 @@ type UserHandler struct {
 	users     *storage.UserRepo
 	settings  *storage.SettingsRepo
 	tokens    *storage.TokenRepo
+	progress  *storage.ProgressRepo
 	mailer    *email.Mailer
 	jwtSecret string
 }
@@ -22,6 +24,7 @@ func NewUserHandler(
 	users *storage.UserRepo,
 	settings *storage.SettingsRepo,
 	tokens *storage.TokenRepo,
+	progress *storage.ProgressRepo,
 	mailer *email.Mailer,
 	jwtSecret string,
 ) *UserHandler {
@@ -29,6 +32,7 @@ func NewUserHandler(
 		users:     users,
 		settings:  settings,
 		tokens:    tokens,
+		progress:  progress,
 		mailer:    mailer,
 		jwtSecret: jwtSecret,
 	}
@@ -93,8 +97,12 @@ func (h *UserHandler) Register(c *fiber.Ctx) error {
 		})
 	}
 
-	// Initialize default user settings in DB
-	_, _ = h.settings.GetByUserID(c.Context(), user.ID)
+	// Initialize default user settings in DB and record baseline weight
+	if defSettings, err := h.settings.GetByUserID(c.Context(), user.ID); err == nil && defSettings != nil {
+		if h.progress != nil && defSettings.Weight > 0 {
+			_, _ = h.progress.RecordWeight(c.Context(), user.ID, defSettings.Weight, time.Now())
+		}
+	}
 
 	// Send generated password to user's email asynchronously
 	if body.Email != "" && generatedPassword != "" && h.mailer != nil {
@@ -256,6 +264,11 @@ func (h *UserHandler) UpdateSettings(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
+
+	if h.progress != nil && s.Weight > 0 {
+		_, _ = h.progress.RecordWeight(c.Context(), userID, s.Weight, time.Now())
+	}
+
 	return c.JSON(updated)
 }
 

@@ -17,6 +17,7 @@ type DishRating struct {
 	TimeMinutes int    `json:"timeMinutes"`
 	Rating      string `json:"rating"` // "good", "neutral", "bad"
 }
+
 type Feedback struct {
 	ID          uuid.UUID    `json:"id"`
 	UserID      uuid.UUID    `json:"user_id"`

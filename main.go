@@ -45,16 +45,18 @@ func main() {
 	tokenRepo := storage.NewTokenRepo(pool)
 	planRepo := storage.NewPlanRepo(pool)
 	feedbackRepo := storage.NewFeedbackRepo(pool)
+	progressRepo := storage.NewProgressRepo(pool)
 
 	// Services.
 	silpoSvc := silpo.NewService(cfg.SilpoRefreshURL)
 	mailer := email.NewMailer(cfg.SMTPHost, cfg.SMTPPort, cfg.SMTPUser, cfg.SMTPPass, cfg.SMTPFrom)
 
 	// Handlers.
-	userHandler := handler.NewUserHandler(userRepo, settingsRepo, tokenRepo, mailer, cfg.JWTSecret)
+	userHandler := handler.NewUserHandler(userRepo, settingsRepo, tokenRepo, progressRepo, mailer, cfg.JWTSecret)
 	planHandler := handler.NewPlanHandler(planRepo)
 	feedbackHandler := handler.NewFeedbackHandler(feedbackRepo)
-	streamHandler := handler.NewStreamHandler(planRepo, tokenRepo, userRepo, settingsRepo, feedbackRepo, silpoSvc, cfg.CoreAgentURL, cfg.CoreServiceToken)
+	progressHandler := handler.NewProgressHandler(progressRepo, settingsRepo)
+	streamHandler := handler.NewStreamHandler(planRepo, tokenRepo, userRepo, settingsRepo, feedbackRepo, progressRepo, silpoSvc, cfg.CoreAgentURL, cfg.CoreServiceToken)
 
 	// Fiber app.
 	app := fiber.New(fiber.Config{
@@ -95,6 +97,12 @@ func main() {
 	// Plan routes.
 	auth.Get("/plans", planHandler.List)
 	auth.Get("/plans/:id", planHandler.Get)
+
+	// Progress & Archive routes (weight dynamics & weekly expenses).
+	auth.Get("/progress", progressHandler.GetSummary)
+	auth.Post("/progress/weight", progressHandler.RecordWeight)
+	auth.Post("/progress/expenses", progressHandler.RecordExpense)
+	auth.Get("/progress/export/csv", progressHandler.ExportCSV)
 
 	// Streaming proxy.
 	auth.Get("/plan/stream", streamHandler.Stream)

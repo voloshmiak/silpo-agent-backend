@@ -12,7 +12,9 @@ type FeedbackHandler struct {
 }
 
 func NewFeedbackHandler(feedbacks *storage.FeedbackRepo) *FeedbackHandler {
-	return &FeedbackHandler{feedbacks: feedbacks}
+	return &FeedbackHandler{
+		feedbacks: feedbacks,
+	}
 }
 
 type submitFeedbackRequest struct {
@@ -21,7 +23,7 @@ type submitFeedbackRequest struct {
 	Tags        []string             `json:"tags"`
 }
 
-// POST /feedbacks
+// POST /feedbacks — submit user feedback for the week (dish ratings & tags)
 func (h *FeedbackHandler) Create(c *fiber.Ctx) error {
 	userID := middleware.GetUserID(c)
 
@@ -52,7 +54,7 @@ func (h *FeedbackHandler) Create(c *fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(saved)
 }
 
-// GET /feedbacks/latest
+// GET /feedbacks/latest — get user's most recent feedback
 func (h *FeedbackHandler) GetLatest(c *fiber.Ctx) error {
 	userID := middleware.GetUserID(c)
 
