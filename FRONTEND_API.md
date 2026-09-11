@@ -79,8 +79,8 @@
 Старий пароль вводити **не потрібно** (достатньо бути авторизованим через Bearer token).
 
 * **PUT** `/users/me/password`
-* **Headers:**  
-  - `Authorization: Bearer <token>`  
+* **Headers:**
+  - `Authorization: Bearer <token>`
   - `Content-Type: application/json`
 * **Body:**
 ```json
@@ -121,8 +121,8 @@
 
 ### 🔹 Оновити ім'я користувача
 * **PUT** `/users/me`
-* **Headers:**  
-  - `Authorization: Bearer <token>`  
+* **Headers:**
+  - `Authorization: Bearer <token>`
   - `Content-Type: application/json`
 * **Body:**
 ```json
@@ -178,8 +178,8 @@
 
 ### 🔹 Зберегти зміни (Кнопка «ЗБЕРЕГТИ ЗМІНИ»)
 * **PUT** `/users/me/settings`
-* **Headers:**  
-  - `Authorization: Bearer <token>`  
+* **Headers:**
+  - `Authorization: Bearer <token>`
   - `Content-Type: application/json`
 * **Body:**
 ```json
@@ -216,8 +216,8 @@
 ### 🔹 Зберегти/Оновити Silpo токен
 Якщо токен не передали під час реєстрації або його треба оновити:
 * **POST** `/users/me/silpo-token`
-* **Headers:**  
-  - `Authorization: Bearer <token>`  
+* **Headers:**
+  - `Authorization: Bearer <token>`
   - `Content-Type: application/json`
 * **Body:**
 ```json
@@ -239,8 +239,8 @@
 
 ### 🔹 1. Зберегти фідбек користувача
 * **POST** `/feedbacks`
-* **Headers:**  
-  - `Authorization: Bearer <token>`  
+* **Headers:**
+  - `Authorization: Bearer <token>`
   - `Content-Type: application/json`
 * **Body:**
 ```json
@@ -425,10 +425,19 @@ await fetchEventSource(url, {
     "user_id": "d7676182-2c97-492f-a057-b33b52142e25",
     "title": "### ЦІЛІ",
     "content": "{\"answer\":\"### ЦІЛІ...\",\"plan_data\":{\"cart_items\":[...],\"targets\":{...}}}",
+    "week_number": 12,
+    "week_start_date": "2026-09-07",
     "created_at": "2026-09-06T14:20:21Z"
   }
 ]
 ```
+
+> 💡 `week_number` — порядковий номер тижня для цього користувача
+> (використовуйте для заголовка «ТИЖДЕНЬ 12» на екрані Фідбек/Тиждень/Архів).
+> Рахується автоматично: якщо попередній план був рівно тиждень тому —
+> номер збільшується на 1; якщо користувач пропустив один чи більше
+> тижнів — рахунок починається заново з 1. `week_start_date` — понеділок
+> того календарного тижня, до якого належить план.
 
 > **Порада для UI:** Поле `content` — це JSON-рядок. Зробіть `const parsed = JSON.parse(plan.content)`:
 > - `parsed.answer` — готовий красиво відформатований текст (Markdown) з цілями, раціоном на тиждень та таблицею.

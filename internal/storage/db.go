@@ -80,6 +80,12 @@ func migrate(ctx context.Context, pool *pgxpool.Pool) error {
 			created_at TIMESTAMPTZ DEFAULT NOW()
 		);
 
+ 		ALTER TABLE plans ADD COLUMN IF NOT EXISTS week_number INT NOT NULL DEFAULT 1;
+        ALTER TABLE plans ADD COLUMN IF NOT EXISTS week_start_date DATE NOT NULL DEFAULT CURRENT_DATE;
+
+       	CREATE INDEX IF NOT EXISTS idx_plans_user_week
+         	 ON plans (user_id, week_start_date DESC);
+
 		CREATE TABLE IF NOT EXISTS feedbacks (
 			id           UUID PRIMARY KEY,
 			user_id      UUID REFERENCES users(id) ON DELETE CASCADE,
@@ -88,7 +94,6 @@ func migrate(ctx context.Context, pool *pgxpool.Pool) error {
 			tags         TEXT[] NOT NULL DEFAULT '{}',
 			created_at   TIMESTAMPTZ DEFAULT NOW()
 		);
-
 		ALTER TABLE feedbacks DROP COLUMN IF EXISTS summary;
 		ALTER TABLE feedbacks DROP COLUMN IF EXISTS decisions;
 
