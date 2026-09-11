@@ -104,13 +104,6 @@ func (h *UserHandler) Register(c *fiber.Ctx) error {
 		}
 	}
 
-	// Send generated password to user's email asynchronously
-	if body.Email != "" && generatedPassword != "" && h.mailer != nil {
-		go func(to, pass string) {
-			_ = h.mailer.SendPassword(to, pass)
-		}(body.Email, generatedPassword)
-	}
-
 	token, err := auth.GenerateToken(user.ID, h.jwtSecret)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to generate token"})
@@ -173,31 +166,18 @@ func (h *UserHandler) ChangePassword(c *fiber.Ctx) error {
 	userID := middleware.GetUserID(c)
 
 	var body struct {
-		OldPassword string `json:"old_password"`
+		OldPassword string `json:"old_password,omitempty"`
 		NewPassword string `json:"new_password"`
 	}
 	if err := c.BodyParser(&body); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON"})
 	}
 
+	body.NewPassword = strings.TrimSpace(body.NewPassword)
 	if len(body.NewPassword) < 6 {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "Новий пароль має бути не менше 6 символів",
 		})
-	}
-
-	user, err := h.users.GetByID(c.Context(), userID)
-	if err != nil {
-		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "user not found"})
-	}
-
-	// If the user already has a password set, verify the old one
-	if user.PasswordHash != "" {
-		if !auth.CheckPasswordHash(body.OldPassword, user.PasswordHash) {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "Поточний пароль введено невірно",
-			})
-		}
 	}
 
 	newHash, err := auth.HashPassword(body.NewPassword)
