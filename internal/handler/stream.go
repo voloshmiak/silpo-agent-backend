@@ -271,12 +271,20 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 			saveCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 
-			log.Printf("[INFO] saving plan for user %s: title=%q, bytes=%d", userID, planTitle, len(content))
-			p, err := h.plans.Create(saveCtx, userID, planTitle, string(content))
+			// Decide which week this plan belongs to before writing it: a plan
+			// with no week_number would be unable to render "Тиждень N" at all.
+			weekNumber, weekStartDate, weekErr := h.plans.NextWeekInfo(saveCtx, userID)
+			if weekErr != nil {
+				log.Printf("[ERROR] failed to compute week info for user %s: %v — defaulting to week 1", userID, weekErr)
+				weekNumber, weekStartDate = 1, time.Now().UTC()
+			}
+
+			log.Printf("[INFO] saving plan for user %s: title=%q, week=%d, bytes=%d", userID, planTitle, weekNumber, len(content))
+			p, err := h.plans.Create(saveCtx, userID, planTitle, string(content), weekNumber, weekStartDate)
 			if err != nil {
 				log.Printf("[ERROR] failed to create plan in DB for user %s: %v", userID, err)
 			} else {
-				log.Printf("[INFO] plan created successfully: id=%s for user %s", p.ID, userID)
+				log.Printf("[INFO] plan created successfully: id=%s, week=%d for user %s", p.ID, p.WeekNumber, userID)
 			}
 		}
 
