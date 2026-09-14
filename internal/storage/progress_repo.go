@@ -145,6 +145,25 @@ func (r *ProgressRepo) RecordExpense(ctx context.Context, exp *ExpenseRecord) (*
 	return exp, nil
 }
 
+// GetLatestExpenseByPlanID returns the most recent expense recorded against a
+// plan. A missing record comes back as pgx.ErrNoRows (wrapped).
+func (r *ProgressRepo) GetLatestExpenseByPlanID(ctx context.Context, userID, planID uuid.UUID) (*ExpenseRecord, error) {
+	exp := &ExpenseRecord{}
+	err := r.pool.QueryRow(ctx, `
+		SELECT id, user_id, plan_id, week_number, week_label, total_cost, budget_limit, is_overspent, recorded_at, created_at
+		FROM weekly_expenses
+		WHERE user_id = $1 AND plan_id = $2
+		ORDER BY created_at DESC
+		LIMIT 1
+	`, userID, planID).Scan(
+		&exp.ID, &exp.UserID, &exp.PlanID, &exp.WeekNumber, &exp.WeekLabel, &exp.TotalCost, &exp.BudgetLimit, &exp.IsOverspent, &exp.RecordedAt, &exp.CreatedAt,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get expense for plan %s: %w", planID, err)
+	}
+	return exp, nil
+}
+
 // ListExpenses returns weekly expenses ordered chronologically (ASC).
 // If limit > 0, returns the most recent `limit` records in chronological order.
 func (r *ProgressRepo) ListExpenses(ctx context.Context, userID uuid.UUID, limit int) ([]ExpenseRecord, error) {

@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/voloshmiak/silpo-agent-backend/internal/middleware"
 	"github.com/voloshmiak/silpo-agent-backend/internal/silpo"
 	"github.com/voloshmiak/silpo-agent-backend/internal/storage"
@@ -169,11 +171,10 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 		}
 	}
 
-	// Load latest user feedback if available (to adapt next plan based on dish ratings & tags).
-	latestFeedback, _ := h.feedbacks.GetLatestByUserID(c.Context(), userID)
+	previousFeedback := h.loadPreviousFeedback(c.Context(), userID)
 
 	// Send request to core agent.
-	bodyBytes, err := json.Marshal(buildCoreRequest(userSettings, silpoToken, note, fridgeItems, previousPlan, apply, latestFeedback))
+	bodyBytes, err := json.Marshal(buildCoreRequest(userSettings, silpoToken, note, fridgeItems, previousPlan, previousFeedback, apply))
 	if err != nil {
 		log.Printf("[ERROR] failed to build upstream body for user %s: %v", userID, err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to build upstream request"})
@@ -304,22 +305,29 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 				log.Printf("[INFO] plan created successfully: id=%s, week=%d for user %s", p.ID, p.WeekNumber, userID)
 
 				if h.progress != nil {
-					cost := calculatePlanCost(contentObj.Plan, userSettings.WeeklyBudget)
+					cost, planBudget, ok := planSpend(contentObj.Plan, userSettings.DeliveryIncluded)
+					// The budget the core actually planned against: the request
+					// falls back to a default when the stored one is missing.
+					budgetLimit := userSettings.WeeklyBudget
+					if planBudget > 0 {
+						budgetLimit = planBudget
+					}
 					weekLabel := fmt.Sprintf("Т%d", weekNumber)
-					_, expErr := h.progress.RecordExpense(saveCtx, &storage.ExpenseRecord{
+					if !ok {
+						log.Printf("[WARN] plan %s for user %s carries no cart totals, weekly expense not recorded", p.ID, userID)
+					} else if _, expErr := h.progress.RecordExpense(saveCtx, &storage.ExpenseRecord{
 						UserID:      userID,
 						PlanID:      &p.ID,
 						WeekNumber:  weekNumber,
 						WeekLabel:   weekLabel,
 						TotalCost:   cost,
-						BudgetLimit: userSettings.WeeklyBudget,
+						BudgetLimit: budgetLimit,
 						RecordedAt:  time.Now(),
-					})
-					if expErr != nil {
+					}); expErr != nil {
 						log.Printf("[WARN] failed to record weekly expense for user %s: %v", userID, expErr)
 					} else {
 						log.Printf("[INFO] recorded weekly expense for user %s: week=%s cost=%.2f limit=%.2f",
-							userID, weekLabel, cost, userSettings.WeeklyBudget)
+							userID, weekLabel, cost, budgetLimit)
 					}
 				}
 			}
@@ -426,41 +434,98 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 	return nil
 }
 
-func calculatePlanCost(planObj interface{}, fallbackBudget float64) float64 {
-	if planObj == nil {
-		return fallbackBudget
+// loadPreviousFeedback assembles WeekFeedback from the user's latest feedback.
+//
+// The spend and the weight change are taken for the plan that feedback was
+// written about: the spend from the expense recorded against it, the weight
+// change from the start of that plan's week. Every read here is best-effort —
+// a run without adaptation is still a valid run, so failures are logged and the
+// missing part is sent as unknown.
+func (h *StreamHandler) loadPreviousFeedback(ctx context.Context, userID uuid.UUID) *coreWeekFeedback {
+	fb, err := h.feedbacks.GetLatestByUserID(ctx, userID)
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			log.Printf("[WARN] failed to load feedback for user %s: %v", userID, err)
+		}
+		return nil
 	}
-	m, ok := planObj.(map[string]interface{})
-	if !ok {
-		return fallbackBudget
+
+	var spentUAH, weightChangeKg float64
+	if fb.PlanID != nil && h.progress != nil {
+		exp, expErr := h.progress.GetLatestExpenseByPlanID(ctx, userID, *fb.PlanID)
+		switch {
+		case expErr == nil:
+			spentUAH = exp.TotalCost
+		case !errors.Is(expErr, pgx.ErrNoRows):
+			log.Printf("[WARN] failed to load expense of plan %s for user %s: %v", *fb.PlanID, userID, expErr)
+		}
+
+		plan, planErr := h.plans.GetByID(ctx, *fb.PlanID, userID)
+		if planErr != nil {
+			log.Printf("[WARN] failed to load plan %s behind feedback %s for user %s: %v", *fb.PlanID, fb.ID, userID, planErr)
+		} else if weights, wErr := h.progress.ListWeights(ctx, userID, 0); wErr != nil {
+			log.Printf("[WARN] failed to load weights for user %s: %v", userID, wErr)
+		} else {
+			weightChangeKg = weightChangeSince(weights, plan.WeekStartDate)
+		}
 	}
-	if items, ok := m["cart_items"].([]interface{}); ok && len(items) > 0 {
-		var sum float64
-		for _, it := range items {
-			if itemMap, ok := it.(map[string]interface{}); ok {
-				var price float64
-				switch p := itemMap["price"].(type) {
-				case float64:
-					price = p
-				case int:
-					price = float64(p)
-				}
-				qty := 1.0
-				switch q := itemMap["quantity"].(type) {
-				case float64:
-					qty = q
-				case int:
-					qty = float64(q)
-				}
-				sum += price * qty
+
+	weekFeedback := buildWeekFeedback(fb, spentUAH, weightChangeKg)
+	if weekFeedback != nil {
+		log.Printf("[INFO] feedback %s for user %s: dishes=%d, tags=%q, spent=%.2f, weight_change=%+.1f",
+			fb.ID, userID, len(weekFeedback.Dishes), weekFeedback.Note, spentUAH, weightChangeKg)
+	}
+	return weekFeedback
+}
+
+// planSpend returns what a Plan costs against the budget, and the budget the
+// plan was made for.
+//
+// It counts the way the core's own money audit does (validator._audit_money):
+// with delivery inside the budget the spend is summary.total_uah, otherwise
+// summary.products_total_uah. Both are copied from the Silpo cart's
+// calculation. A plan can still pass with those unfilled once the audit runs out
+// of rounds, so products fall back to the sum of cart[].total_price and the
+// total to products plus delivery.
+//
+// ok is false when the plan carries no money at all: recording the budget as
+// the spend instead would read as a real week that landed exactly on the limit.
+func planSpend(planObj interface{}, deliveryIncluded bool) (spend, budget float64, ok bool) {
+	plan, isMap := planObj.(map[string]interface{})
+	if !isMap {
+		return 0, 0, false
+	}
+	summary, _ := plan["summary"].(map[string]interface{})
+
+	budget = jsonNumber(summary["budget_uah"])
+	products := jsonNumber(summary["products_total_uah"])
+	total := jsonNumber(summary["total_uah"])
+
+	if products <= 0 {
+		cart, _ := plan["cart"].([]interface{})
+		for _, entry := range cart {
+			if item, isItem := entry.(map[string]interface{}); isItem {
+				products += jsonNumber(item["total_price"])
 			}
 		}
-		if sum > 0 {
-			return math.Round(sum*100) / 100
-		}
 	}
-	if b, ok := m["budget_uah"].(float64); ok && b > 0 {
-		return b
+	if total <= 0 && products > 0 {
+		total = products + jsonNumber(summary["delivery_uah"])
 	}
-	return fallbackBudget
+
+	spend = products
+	if deliveryIncluded {
+		spend = total
+	}
+	if spend <= 0 {
+		return 0, budget, false
+	}
+	return math.Round(spend*100) / 100, budget, true
+}
+
+// jsonNumber reads a number out of a value decoded into interface{}, where
+// every JSON number is a float64. Anything else counts as 0.
+func jsonNumber(v interface{}) float64 {
+	f, _ := v.(float64)
+	return f
 }

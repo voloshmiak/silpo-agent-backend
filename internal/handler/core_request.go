@@ -4,6 +4,7 @@ import (
 	"log"
 	"math"
 	"strings"
+	"time"
 
 	"github.com/voloshmiak/silpo-agent-backend/internal/storage"
 )
@@ -14,8 +15,9 @@ import (
 // body. Every field here is read from user_settings — the browser cannot
 // override a stored value any more, so a screen holding a stale copy of the
 // profile can no longer plan a week against numbers the user never saved. The
-// only per-run inputs left are the ones that exist nowhere in the DB: the free
-// note, the fridge, the previous plan and the apply flag.
+// only per-run inputs left are the ones that exist nowhere in the settings: the
+// free note, the fridge, the previous plan, last week's feedback and the apply
+// flag.
 //
 // missed_workout_today is absent on purpose: the core builds a whole week and
 // has no idea what day it is for the user, so a flag about today would land on
@@ -36,8 +38,36 @@ type coreRequest struct {
 	ExcludedProducts []string          `json:"excluded_products"`
 	FridgeItems      []string          `json:"fridge_items"`
 	Note             string            `json:"note"`
+	PreviousFeedback *coreWeekFeedback `json:"previous_feedback"`
 	PreviousPlan     *interface{}      `json:"previous_plan"`
 	Apply            bool              `json:"apply"`
+}
+
+// coreWeekFeedback is PlanRequest.previous_feedback — the adaptation channel.
+// When it is set the core ignores previous_plan entirely. Zero spent_uah and
+// weight_change_kg are left out of the prompt, so zero means "unknown".
+type coreWeekFeedback struct {
+	SpentUAH       float64               `json:"spent_uah"`
+	WeightChangeKg float64               `json:"weight_change_kg"`
+	Products       []coreProductFeedback `json:"products"`
+	Dishes         []coreDishFeedback    `json:"dishes"`
+	Note           string                `json:"note"`
+}
+
+// coreProductFeedback is WeekFeedback.products[]. Nothing collects per-product
+// verdicts yet, so the list always goes out empty.
+type coreProductFeedback struct {
+	Name    string `json:"name"`
+	Slug    string `json:"slug"`
+	Verdict string `json:"verdict"`
+	Note    string `json:"note"`
+}
+
+// coreDishFeedback is WeekFeedback.dishes[]. Rating 0 means "not rated".
+type coreDishFeedback struct {
+	Title  string `json:"title"`
+	Rating int    `json:"rating"`
+	Note   string `json:"note"`
 }
 
 // coreProfile is PlanRequest.profile. Height, age and sex are nullable: the
@@ -61,6 +91,16 @@ const (
 	maxWorkoutsPerWeek = 7
 	maxWeeklyPaceKg    = 2.0
 )
+
+// dishRatingScores maps the feedback screen's three grades onto the core's 1-5
+// rating, which the model sees as "N/5": the grades take the ends and the middle
+// of that scale, so "good" does not read as a middling 3/5. An unknown grade
+// maps to 0, which the core reads as unrated.
+var dishRatingScores = map[string]int{
+	"bad":     1,
+	"neutral": 3,
+	"good":    5,
+}
 
 // Settings hold the Ukrainian labels the UI shows. The core accepts those too,
 // but API.md asks for the latin identifiers, so the mapping happens here, where
@@ -144,19 +184,87 @@ func nonNilStrings(values []string) []string {
 	return values
 }
 
+// buildWeekFeedback turns the stored weekly feedback into WeekFeedback.
+//
+// Dish grades and tags travel as they are: dishes with their ratings, tags as
+// the week's note. They used to be folded into excluded_products and the user's
+// note instead, which turned a dish title into a stop-product and gave the tags
+// the priority the core reserves for the user's own wishes.
+//
+// spentUAH and weightChangeKg are 0 when unknown. A feedback that carries
+// nothing at all yields nil, so the core falls back to previous_plan.
+func buildWeekFeedback(fb *storage.Feedback, spentUAH, weightChangeKg float64) *coreWeekFeedback {
+	if fb == nil {
+		return nil
+	}
+
+	dishes := make([]coreDishFeedback, 0, len(fb.DishRatings))
+	for _, dish := range fb.DishRatings {
+		title := strings.TrimSpace(dish.Title)
+		if title == "" {
+			continue
+		}
+		dishes = append(dishes, coreDishFeedback{
+			Title:  title,
+			Rating: dishRatingScores[strings.ToLower(strings.TrimSpace(dish.Rating))],
+		})
+	}
+
+	tags := make([]string, 0, len(fb.Tags))
+	for _, tag := range fb.Tags {
+		if t := strings.TrimSpace(tag); t != "" {
+			tags = append(tags, t)
+		}
+	}
+
+	if len(dishes) == 0 && len(tags) == 0 && spentUAH == 0 && weightChangeKg == 0 {
+		return nil
+	}
+
+	return &coreWeekFeedback{
+		SpentUAH:       spentUAH,
+		WeightChangeKg: weightChangeKg,
+		Products:       []coreProductFeedback{},
+		Dishes:         dishes,
+		Note:           strings.Join(tags, "; "),
+	}
+}
+
+// weightChangeSince is the weight change from the start of a plan's week to the
+// latest record. weights must be in chronological order. The baseline is the
+// last record on or before since, or the first one after it when the user only
+// started weighing in mid-week. Returns 0 when there is nothing to compare.
+func weightChangeSince(weights []storage.WeightRecord, since time.Time) float64 {
+	if len(weights) < 2 {
+		return 0
+	}
+	baseline := 0
+	for i, w := range weights {
+		if w.RecordedAt.After(since) {
+			break
+		}
+		baseline = i
+	}
+	latest := len(weights) - 1
+	if baseline == latest {
+		return 0
+	}
+	return math.Round((weights[latest].Weight-weights[baseline].Weight)*10) / 10
+}
+
 // buildCoreRequest turns the stored settings into one PlanRequest.
 //
-// note, fridgeItems, previousPlan and apply are the per-run arguments: they
-// describe this generation rather than the user, so there is no row to read
-// them from.
+// note, fridgeItems, previousPlan, previousFeedback and apply are the per-run
+// arguments: they describe this generation rather than the user's profile, so
+// user_settings has no row to read them from.
 func buildCoreRequest(
 	s *storage.UserSettings,
 	silpoToken string,
 	note string,
 	fridgeItems []string,
 	previousPlan *interface{},
+	previousFeedback *coreWeekFeedback,
 	apply bool,
-	fb *storage.Feedback,
 ) coreRequest {
 	weight := s.Weight
 	if weight <= 0 {
@@ -206,32 +314,6 @@ func buildCoreRequest(
 		profile.Sex = &sex
 	}
 
-	excludedProducts := nonNilStrings(s.ExcludedProducts)
-	effectiveNote := note
-
-	if fb != nil {
-		// Exclude dishes rated as "bad"
-		for _, dish := range fb.DishRatings {
-			if dish.Rating == "bad" && dish.Title != "" {
-				excludedProducts = append(excludedProducts, dish.Title)
-			}
-		}
-
-		// Append feedback notes
-		feedbackNotes := []string{}
-		if len(fb.Tags) > 0 {
-			feedbackNotes = append(feedbackNotes, "Враховано фідбек: "+strings.Join(fb.Tags, ", "))
-		}
-		if len(feedbackNotes) > 0 {
-			extra := strings.Join(feedbackNotes, "; ")
-			if effectiveNote != "" {
-				effectiveNote = effectiveNote + " (" + extra + ")"
-			} else {
-				effectiveNote = extra
-			}
-		}
-	}
-
 	return coreRequest{
 		SilpoAccessToken: silpoToken,
 		Profile:          profile,
@@ -244,9 +326,10 @@ func buildCoreRequest(
 		WorkoutSchedule:  normalizeSchedule(s.WorkoutSchedule),
 		DietType:         normalize(dietAliases, s.DietType),
 		Allergens:        nonNilStrings(s.Allergens),
-		ExcludedProducts: excludedProducts,
+		ExcludedProducts: nonNilStrings(s.ExcludedProducts),
 		FridgeItems:      nonNilStrings(fridgeItems),
-		Note:             effectiveNote,
+		Note:             note,
+		PreviousFeedback: previousFeedback,
 		PreviousPlan:     previousPlan,
 		Apply:            apply,
 	}
