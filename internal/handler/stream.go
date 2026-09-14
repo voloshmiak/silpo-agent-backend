@@ -95,10 +95,21 @@ func newStreamClient() *http.Client {
 // halves could disagree.
 //
 // Query params are only what no row holds: note (the user's free text), fridge
-// (comma-separated), apply (write to cart). Last week reaches the core only as
-// the latest feedback, never as a previous plan.
+// (comma-separated), apply (write to cart), week (current|next — which week the
+// plan is filed under). Last week reaches the core only as the latest feedback,
+// never as a previous plan.
 func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 	userID := middleware.GetUserID(c)
+
+	// week=next files the plan under the coming week. On a Sunday the user shops
+	// for the week ahead, and without it that plan would land on the week that
+	// is just ending. Fixed at request time, so a run that crosses midnight into
+	// Monday still lands on the week that was asked for.
+	weekParam := strings.ToLower(strings.TrimSpace(c.Query("week", "current")))
+	if weekParam != "current" && weekParam != "next" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "week must be current or next"})
+	}
+	weekStartDate := storage.WeekStart(time.Now(), weekParam == "next")
 
 	// Ensure user exists.
 	_, err := h.users.GetByID(c.Context(), userID)
@@ -269,10 +280,10 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 			saveCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 			defer cancel()
 
-			weekNumber, weekStartDate, weekErr := h.plans.NextWeekInfo(saveCtx, userID)
+			weekNumber, weekErr := h.plans.NextWeekInfo(saveCtx, userID, weekStartDate)
 			if weekErr != nil {
 				log.Printf("[ERROR] failed to compute week info for user %s: %v — defaulting to week 1", userID, weekErr)
-				weekNumber, weekStartDate = 1, time.Now().UTC()
+				weekNumber = 1
 			}
 
 			log.Printf("[INFO] saving plan for user %s: title=%q, week=%d, bytes=%d", userID, planTitle, weekNumber, len(content))

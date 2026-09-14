@@ -39,34 +39,48 @@ func mondayOf(t time.Time) time.Time {
 	return time.Date(monday.Year(), monday.Month(), monday.Day(), 0, 0, 0, 0, time.UTC)
 }
 
-func (r *PlanRepo) NextWeekInfo(ctx context.Context, userID uuid.UUID) (weekNumber int, weekStartDate time.Time, err error) {
-	thisMonday := mondayOf(time.Now())
+// WeekStart is the Monday (UTC) of the week a plan is made for: the current
+// week, or the one after it when the user plans ahead — typically on a Sunday,
+// when the groceries for the coming week get bought.
+func WeekStart(now time.Time, next bool) time.Time {
+	monday := mondayOf(now)
+	if next {
+		return monday.AddDate(0, 0, 7)
+	}
+	return monday
+}
 
+// NextWeekInfo numbers a plan for the week starting at weekStart. Only plans up
+// to that week count: another plan for the same week keeps its number, a plan
+// for the week right before continues the count, and anything older — or no
+// plan at all — starts over at 1. Plans already made for later weeks are
+// ignored, so planning ahead on a Sunday doesn't renumber the current week.
+func (r *PlanRepo) NextWeekInfo(ctx context.Context, userID uuid.UUID, weekStart time.Time) (int, error) {
 	var lastWeekNumber int
 	var lastWeekStart time.Time
-	err = r.pool.QueryRow(ctx, `
+	err := r.pool.QueryRow(ctx, `
 		SELECT week_number, week_start_date
 		FROM plans
-		WHERE user_id = $1
+		WHERE user_id = $1 AND week_start_date <= $2
 		ORDER BY week_start_date DESC, created_at DESC
 		LIMIT 1
-	`, userID).Scan(&lastWeekNumber, &lastWeekStart)
+	`, userID, weekStart).Scan(&lastWeekNumber, &lastWeekStart)
 
 	switch {
 	case err == pgx.ErrNoRows:
-		return 1, thisMonday, nil
+		return 1, nil
 	case err != nil:
-		return 0, time.Time{}, fmt.Errorf("get latest plan week info: %w", err)
+		return 0, fmt.Errorf("get latest plan week info: %w", err)
 	}
 
 	lastWeekStart = lastWeekStart.UTC()
 	switch {
-	case lastWeekStart.Equal(thisMonday):
-		return lastWeekNumber, thisMonday, nil
-	case lastWeekStart.Equal(thisMonday.AddDate(0, 0, -7)):
-		return lastWeekNumber + 1, thisMonday, nil
+	case lastWeekStart.Equal(weekStart):
+		return lastWeekNumber, nil
+	case lastWeekStart.Equal(weekStart.AddDate(0, 0, -7)):
+		return lastWeekNumber + 1, nil
 	default:
-		return 1, thisMonday, nil
+		return 1, nil
 	}
 }
 
