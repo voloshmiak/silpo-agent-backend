@@ -16,8 +16,7 @@ import (
 // override a stored value any more, so a screen holding a stale copy of the
 // profile can no longer plan a week against numbers the user never saved. The
 // only per-run inputs left are the ones that exist nowhere in the settings: the
-// free note, the fridge, the previous plan, last week's feedback and the apply
-// flag.
+// free note, the fridge, last week's feedback and the apply flag.
 //
 // missed_workout_today is absent on purpose: the core builds a whole week and
 // has no idea what day it is for the user, so a flag about today would land on
@@ -39,13 +38,13 @@ type coreRequest struct {
 	FridgeItems      []string          `json:"fridge_items"`
 	Note             string            `json:"note"`
 	PreviousFeedback *coreWeekFeedback `json:"previous_feedback"`
-	PreviousPlan     *interface{}      `json:"previous_plan"`
 	Apply            bool              `json:"apply"`
 }
 
-// coreWeekFeedback is PlanRequest.previous_feedback — the adaptation channel.
-// When it is set the core ignores previous_plan entirely. Zero spent_uah and
-// weight_change_kg are left out of the prompt, so zero means "unknown".
+// coreWeekFeedback is PlanRequest.previous_feedback — the adaptation channel,
+// and the only one sent: the deprecated previous_plan is left out. Zero
+// spent_uah and weight_change_kg are left out of the prompt, so zero means
+// "unknown".
 type coreWeekFeedback struct {
 	SpentUAH       float64               `json:"spent_uah"`
 	WeightChangeKg float64               `json:"weight_change_kg"`
@@ -192,7 +191,7 @@ func nonNilStrings(values []string) []string {
 // the priority the core reserves for the user's own wishes.
 //
 // spentUAH and weightChangeKg are 0 when unknown. A feedback that carries
-// nothing at all yields nil, so the core falls back to previous_plan.
+// nothing at all yields nil, and the week is planned without history.
 func buildWeekFeedback(fb *storage.Feedback, spentUAH, weightChangeKg float64) *coreWeekFeedback {
 	if fb == nil {
 		return nil
@@ -254,15 +253,14 @@ func weightChangeSince(weights []storage.WeightRecord, since time.Time) float64 
 
 // buildCoreRequest turns the stored settings into one PlanRequest.
 //
-// note, fridgeItems, previousPlan, previousFeedback and apply are the per-run
-// arguments: they describe this generation rather than the user's profile, so
-// user_settings has no row to read them from.
+// note, fridgeItems, previousFeedback and apply are the per-run arguments: they
+// describe this generation rather than the user's profile, so user_settings has
+// no row to read them from.
 func buildCoreRequest(
 	s *storage.UserSettings,
 	silpoToken string,
 	note string,
 	fridgeItems []string,
-	previousPlan *interface{},
 	previousFeedback *coreWeekFeedback,
 	apply bool,
 ) coreRequest {
@@ -330,7 +328,6 @@ func buildCoreRequest(
 		FridgeItems:      nonNilStrings(fridgeItems),
 		Note:             note,
 		PreviousFeedback: previousFeedback,
-		PreviousPlan:     previousPlan,
 		Apply:            apply,
 	}
 }

@@ -95,7 +95,8 @@ func newStreamClient() *http.Client {
 // halves could disagree.
 //
 // Query params are only what no row holds: note (the user's free text), fridge
-// (comma-separated), plan_id (previous plan to adapt), apply (write to cart).
+// (comma-separated), apply (write to cart). Last week reaches the core only as
+// the latest feedback, never as a previous plan.
 func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 	userID := middleware.GetUserID(c)
 
@@ -148,33 +149,10 @@ func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 		}
 	}
 
-	// Load previous plan if plan_id provided.
-	var previousPlan *interface{}
-	if prevID := strings.TrimSpace(c.Query("plan_id", "")); prevID != "" {
-		if pid, parseErr := uuid.Parse(prevID); parseErr == nil {
-			if prev, loadErr := h.plans.GetByID(c.Context(), pid, userID); loadErr == nil {
-				var stored map[string]interface{}
-				if json.Unmarshal([]byte(prev.Content), &stored) == nil {
-					// What we persist is a wrapper — answer, plan_data, raw_text —
-					// and raw_text is the whole SSE transcript of that run. Sending
-					// the wrapper upstream shipped tens of thousands of tokens the
-					// core cannot read and left it with no usable history at all.
-					// Only plan_data is a Plan.
-					planObj, ok := stored["plan_data"]
-					if !ok {
-						planObj = interface{}(stored)
-					}
-					previousPlan = &planObj
-					log.Printf("[INFO] previous plan %s loaded for user %s (unwrapped=%t)", pid, userID, ok)
-				}
-			}
-		}
-	}
-
 	previousFeedback := h.loadPreviousFeedback(c.Context(), userID)
 
 	// Send request to core agent.
-	bodyBytes, err := json.Marshal(buildCoreRequest(userSettings, silpoToken, note, fridgeItems, previousPlan, previousFeedback, apply))
+	bodyBytes, err := json.Marshal(buildCoreRequest(userSettings, silpoToken, note, fridgeItems, previousFeedback, apply))
 	if err != nil {
 		log.Printf("[ERROR] failed to build upstream body for user %s: %v", userID, err)
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "failed to build upstream request"})
