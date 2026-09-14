@@ -95,21 +95,20 @@ func newStreamClient() *http.Client {
 // halves could disagree.
 //
 // Query params are only what no row holds: note (the user's free text), fridge
-// (comma-separated), apply (write to cart), week (current|next — which week the
-// plan is filed under). Last week reaches the core only as the latest feedback,
-// never as a previous plan.
+// (comma-separated), apply (write to cart), week_start (the Monday the plan is
+// filed under). Last week reaches the core only as the latest feedback, never
+// as a previous plan.
 func (h *StreamHandler) Stream(c *fiber.Ctx) error {
 	userID := middleware.GetUserID(c)
 
-	// week=next files the plan under the coming week. On a Sunday the user shops
-	// for the week ahead, and without it that plan would land on the week that
-	// is just ending. Fixed at request time, so a run that crosses midnight into
-	// Monday still lands on the week that was asked for.
-	weekParam := strings.ToLower(strings.TrimSpace(c.Query("week", "current")))
-	if weekParam != "current" && weekParam != "next" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "week must be current or next"})
+	// week_start is the Monday the plan is filed under: this week, or the next
+	// one when the user shops ahead on a Sunday. It is fixed here, so a run that
+	// crosses midnight still lands on the week that was asked for; see
+	// parseWeekStart for why it is a date and not "next".
+	weekStartDate, weekStartErr := parseWeekStart(c.Query("week_start", ""), time.Now())
+	if weekStartErr != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": weekStartErr.Error()})
 	}
-	weekStartDate := storage.WeekStart(time.Now(), weekParam == "next")
 
 	// Ensure user exists.
 	_, err := h.users.GetByID(c.Context(), userID)

@@ -39,15 +39,10 @@ func mondayOf(t time.Time) time.Time {
 	return time.Date(monday.Year(), monday.Month(), monday.Day(), 0, 0, 0, 0, time.UTC)
 }
 
-// WeekStart is the Monday (UTC) of the week a plan is made for: the current
-// week, or the one after it when the user plans ahead — typically on a Sunday,
-// when the groceries for the coming week get bought.
-func WeekStart(now time.Time, next bool) time.Time {
-	monday := mondayOf(now)
-	if next {
-		return monday.AddDate(0, 0, 7)
-	}
-	return monday
+// WeekStart is the Monday (UTC, midnight) of the week t falls in — the key a
+// plan is filed under.
+func WeekStart(t time.Time) time.Time {
+	return mondayOf(t)
 }
 
 // NextWeekInfo numbers a plan for the week starting at weekStart. Only plans up
